@@ -6,12 +6,15 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
 packages=${SONAR_PACKAGES_DIR:-$HOME/dev/riot/riot-browser-extension-pkgs/packages}
-export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
+# Xcode (SwiftUI macros) for the Swift steps only. Cargo must see the same environment as
+# `dev/run-dev.sh` and `cargo test`: the C crates (aws-lc-sys, rquickjs-sys) rebuild, with
+# everything above them, whenever DEVELOPER_DIR changes (about 5 min).
+xcode=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 app="$here/build/Riot.app"
 
 (cd "$root/js" && node build.mjs >/dev/null)
 (cd "$root/core" && cargo build --release -q -p riot-daemon)
-(cd "$here/RiotAgent" && swift build -c release -q)
+(cd "$here/RiotAgent" && DEVELOPER_DIR="$xcode" swift build -c release -q)
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/locales" \
@@ -32,8 +35,8 @@ if [ "${WITH_ES:-0}" = 1 ]; then
   sysext="$app/Contents/Library/SystemExtensions/com.tryriot.agent.es.systemextension"
   mkdir -p "$sysext/Contents/MacOS"
   cp "$here/RiotES/Info.plist" "$sysext/Contents/Info.plist"
-  sdk=$(xcrun --sdk macosx --show-sdk-path)
-  swiftc -O -sdk "$sdk" -target arm64-apple-macos14.0 -swift-version 5 -lEndpointSecurity -lbsm \
+  sdk=$(DEVELOPER_DIR="$xcode" xcrun --sdk macosx --show-sdk-path)
+  DEVELOPER_DIR="$xcode" swiftc -O -sdk "$sdk" -target arm64-apple-macos14.0 -swift-version 5 -lEndpointSecurity -lbsm \
     "$here/RiotES/main.swift" "$here/RiotES/ESGuard.swift" "$here/RiotES/DaemonLink.swift" \
     "$here/RiotAgent/Sources/RiotAgent/DaemonClient.swift" "$here/RiotAgent/Sources/RiotAgent/Models.swift" \
     -o "$sysext/Contents/MacOS/com.tryriot.agent.es"

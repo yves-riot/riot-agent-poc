@@ -104,11 +104,22 @@ const common = {
   plugins: [sonarSources, sourcePatches, conformanceCases],
 };
 
+// Rewrites only what changed: `riot-detect` embeds dist/detection.js (`include_str!`), and
+// cargo rebuilds it, with the daemon's LTO, whenever the file's mtime moves.
+const writeIfChanged = (file, contents) => {
+  if (existsSync(file) && readFileSync(file).equals(Buffer.from(contents))) return;
+  writeFileSync(file, contents);
+};
+const bundle = async (entry, out, options = {}) => {
+  const result = await build({ ...common, ...options, entryPoints: [join(here, entry)], outfile: join(here, out), write: false });
+  for (const file of result.outputFiles) writeIfChanged(file.path, file.contents);
+};
+
 mkdirSync(join(here, 'dist'), { recursive: true });
-await build({ ...common, entryPoints: [join(here, 'src/host.ts')], outfile: join(here, 'dist/detection.js'), minify: true });
-await build({ ...common, entryPoints: [join(here, 'src/conformance.ts')], outfile: join(here, 'dist/conformance.js') });
+await bundle('src/host.ts', 'dist/detection.js', { minify: true });
+await bundle('src/conformance.ts', 'dist/conformance.js');
 
 // Where the fixtures live, for the Rust conformance test.
-writeFileSync(join(here, 'dist/conformance-dir.txt'), conformanceDir);
+writeIfChanged(join(here, 'dist/conformance-dir.txt'), conformanceDir);
 const size = (f) => (readFileSync(join(here, 'dist', f)).length / 1024).toFixed(0);
 console.log(`dist/detection.js ${size('detection.js')} KiB, dist/conformance.js ${size('conformance.js')} KiB`);
