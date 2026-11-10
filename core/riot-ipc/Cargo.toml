@@ -1,0 +1,12 @@
+[package]
+name = "riot-ipc"
+description = "Local protocol between the Riot daemon and its clients (menu bar app, ES extension, CLI): newline-delimited JSON over a Unix socket"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

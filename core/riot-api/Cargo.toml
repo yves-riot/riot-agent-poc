@@ -1,0 +1,15 @@
+[package]
+name = "riot-api"
+description = "Parrot client for the Riot agent: device enrollment, config (identity, workspace, policies), heartbeat, reports"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }

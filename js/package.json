@@ -1,0 +1,16 @@
+{
+  "name": "@tryriot/agent-js-host",
+  "private": true,
+  "type": "module",
+  "description": "Bundles @tryriot/sonar-detection (+ the guard-core token memory) for the agent's embedded QuickJS",
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "0.9.12"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

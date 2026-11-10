@@ -1,0 +1,513 @@
+//! The daemon's state and the decisions it makes for its clients. Every policy decision lives
+//! here: the menu bar app and the ES extension only ask and apply.
+
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::path::Path;
+use std::sync::{Mutex, RwLock};
+use std::time::{Duration, Instant};
+
+use chrono::{DateTime, Utc};
+use riot_api::{AgentConfig, FileSnapshot, SensitiveDataReport, SnapshotDetection, TextSnapshot};
+use riot_detect::{Detection, Engine, FileScan, Options};
+use riot_ipc::{
+    DetokenizeResult, EsConfig, Event, IpcError, WatchedApp, PopupState, PopupView, RecentEvent, RedactTextResult, ScanFileResult, Status,
+    TargetApp, TypeCount,
+};
+use sha2::Digest;
+use tokio::sync::{Notify, broadcast};
+use uuid::Uuid;
+
+use crate::config::{ManagedSettings, Paths};
+use crate::device::Enrollment;
+use crate::reports::Spool;
+
+const PLATFORM: &str = "macos";
+const BYPASS_TTL: Duration = Duration::from_secs(60);
+/// One upload attempt opens the same file several times; notify the user once.
+const BLOCK_NOTIFY_DEBOUNCE: Duration = Duration::from_secs(5);
+const RECENT_EVENTS: usize = 20;
+const SCAN_CACHE: usize = 512;
+
+#[derive(Default)]
+pub struct State {
+    pub settings: Option<ManagedSettings>,
+    pub enrollment: Option<Enrollment>,
+    pub config: Option<AgentConfig>,
+    pub last_sync: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub installed: HashMap<String, bool>,
+    recent: VecDeque<RecentEvent>,
+    text_events: HashMap<String, TextEvent>,
+    blocked_files: HashMap<String, FileIdentity>,
+    bypasses: Vec<(FileIdentity, Instant)>,
+    scan_cache: HashMap<FileIdentity, (ScanFileResult, Instant)>,
+}
+
+struct TextEvent {
+    service_id: String,
+    occurred_at: DateTime<Utc>,
+    counts: Vec<SnapshotDetection>,
+    app_name: String,
+    types: Vec<TypeCount>,
+}
+
+/// Same file, same content: the ES cache and the "send anyway" grant are keyed on this.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+pub struct FileIdentity {
+    dev: u64,
+    ino: u64,
+    mtime_ns: i128,
+    size: u64,
+}
+
+impl FileIdentity {
+    fn of(path: &Path) -> std::io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(path)?;
+        Ok(Self { dev: m.dev(), ino: m.ino(), mtime_ns: m.mtime() as i128 * 1_000_000_000 + m.mtime_nsec() as i128, size: m.size() })
+    }
+}
+
+pub struct Agent {
+    pub paths: Paths,
+    pub engine: Engine,
+    pub spool: Spool,
+    pub state: RwLock<State>,
+    pub events: broadcast::Sender<Event>,
+    pub refresh: Notify,
+    pub reports_pending: Notify,
+    pub version: &'static str,
+    /// Serialises scans so concurrent opens of one file are scanned once.
+    scan_lock: tokio::sync::Mutex<()>,
+    last_block_notice: Mutex<HashMap<FileIdentity, Instant>>,
+}
+
+struct Target {
+    service_id: String,
+    app_name: String,
+    options: Options,
+    allow_bypass: bool,
+}
+
+pub fn bad_request(message: impl Into<String>) -> IpcError {
+    IpcError { code: "badRequest".into(), message: message.into() }
+}
+
+pub fn internal(message: impl ToString) -> IpcError {
+    IpcError { code: "internal".into(), message: message.to_string() }
+}
+
+impl Agent {
+    pub fn new(paths: Paths, engine: Engine) -> anyhow::Result<Self> {
+        let spool = Spool::new(&paths.data_dir)?;
+        Ok(Self {
+            paths,
+            engine,
+            spool,
+            state: RwLock::new(State::default()),
+            events: broadcast::channel(64).0,
+            refresh: Notify::new(),
+            reports_pending: Notify::new(),
+            version: env!("CARGO_PKG_VERSION"),
+            scan_lock: tokio::sync::Mutex::new(()),
+            last_block_notice: Mutex::new(HashMap::new()),
+        }
+        .loaded())
+    }
+
+    fn loaded(self) -> Self {
+        self.state.write().unwrap().enrollment = Enrollment::load(&self.paths.data_dir);
+        self
+    }
+
+    /// The service a frontmost app belongs to, with the policy that applies, when the agent is
+    /// active and the app is one of the policy's desktop apps.
+    fn target(&self, bundle_id: &str) -> Option<Target> {
+        let state = self.state.read().unwrap();
+        let policy = state.config.as_ref()?.active_policy()?;
+        let service = policy.services.iter().find(|s| {
+            s.desktop_apps.iter().any(|a| a.platform == PLATFORM && a.bundle_id.as_deref() == Some(bundle_id))
+        })?;
+        let categories: BTreeMap<String, bool> =
+            policy.data_types.iter().map(|d| (d.data_type.clone(), d.enabled)).collect();
+        Some(Target {
+            service_id: service.service_id.clone(),
+            app_name: service.display_name.clone(),
+            options: Options { categories: Some(categories), max_bytes: None },
+            allow_bypass: policy.allow_bypass_redaction,
+        })
+    }
+
+    pub fn target_apps(&self) -> Vec<TargetApp> {
+        let state = self.state.read().unwrap();
+        let Some(policy) = state.config.as_ref().and_then(|c| c.active_policy()) else { return vec![] };
+        policy
+            .services
+            .iter()
+            .flat_map(|s| {
+                s.desktop_apps.iter().filter(|a| a.platform == PLATFORM).filter_map(|a| {
+                    let bundle_id = a.bundle_id.clone()?;
+                    Some(TargetApp {
+                        service_id: s.service_id.clone(),
+                        display_name: s.display_name.clone(),
+                        installed: state.installed.get(&bundle_id).copied().unwrap_or(false),
+                        bundle_id,
+                    })
+                })
+            })
+            .collect()
+    }
+
+    pub fn es_config(&self) -> EsConfig {
+        let state = self.state.read().unwrap();
+        let watched = state
+            .config
+            .as_ref()
+            .and_then(|c| c.active_policy())
+            .into_iter()
+            .flat_map(|p| p.services.iter())
+            .flat_map(|s| s.desktop_apps.iter())
+            .filter(|a| a.platform == PLATFORM && !a.executable_prefixes.is_empty())
+            .filter_map(|a| {
+                Some(WatchedApp {
+                    bundle_id: a.bundle_id.clone()?,
+                    team_id: a.team_id.clone(),
+                    executable_prefixes: a.executable_prefixes.clone(),
+                })
+            })
+            .collect();
+        // The formats `scanFile` understands (riot-detect / sonar-detection extractors).
+        let extensions = ["pdf", "docx", "xlsx", "csv", "txt"].map(String::from).to_vec();
+        EsConfig { watched, extensions }
+    }
+
+    // ---------- text ----------
+
+    pub async fn redact_text(&self, uid: u32, text: String, bundle_id: String) -> Result<RedactTextResult, IpcError> {
+        let skipped = |allow_bypass| RedactTextResult {
+            action: "skipped".into(),
+            text: None,
+            types: vec![],
+            event_id: None,
+            allow_bypass,
+        };
+        let Some(target) = self.target(&bundle_id) else { return Ok(skipped(false)) };
+
+        let engine = self.engine.clone();
+        let scope = scope(uid, &bundle_id);
+        let options = target.options.clone();
+        let outcome = tokio::task::spawn_blocking(move || engine.redact(&text, &scope, &options)).await;
+        let outcome = match outcome {
+            Ok(Ok(outcome)) => outcome,
+            // As the extension does for a paste: an engine failure leaves the text as it is.
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "redaction failed; clipboard left untouched");
+                return Ok(RedactTextResult { action: "error".into(), ..skipped(target.allow_bypass) });
+            }
+            Err(e) => return Err(internal(e)),
+        };
+        if outcome.detections.is_empty() {
+            return Ok(RedactTextResult { action: "clean".into(), ..skipped(target.allow_bypass) });
+        }
+
+        let types = type_counts(&outcome.detections);
+        let counts = snapshot_counts(&outcome.counts);
+        let event_id = Uuid::new_v4();
+        let now = Utc::now();
+        self.queue_report(SensitiveDataReport {
+            session_id: event_id,
+            service_id: target.service_id.clone(),
+            occurred_at: now,
+            authorization_status: None,
+            text: Some(TextSnapshot { detections: counts.clone(), redacted: true }),
+            files: None,
+        });
+        {
+            let mut state = self.state.write().unwrap();
+            state.text_events.insert(
+                event_id.to_string(),
+                TextEvent {
+                    service_id: target.service_id,
+                    occurred_at: now,
+                    counts,
+                    app_name: target.app_name.clone(),
+                    types: types.clone(),
+                },
+            );
+            if state.text_events.len() > 200 {
+                let oldest = state.text_events.iter().min_by_key(|(_, e)| e.occurred_at).map(|(k, _)| k.clone());
+                oldest.map(|k| state.text_events.remove(&k));
+            }
+            push_recent(&mut state, event_id.to_string(), "textRedacted", &target.app_name, &types);
+        }
+        let _ = self.events.send(Event::StateChanged);
+        Ok(RedactTextResult {
+            action: "redacted".into(),
+            text: Some(outcome.text),
+            types,
+            event_id: Some(event_id.to_string()),
+            allow_bypass: target.allow_bypass,
+        })
+    }
+
+    pub async fn detokenize(&self, uid: u32, text: String, bundle_id: String) -> Result<DetokenizeResult, IpcError> {
+        let engine = self.engine.clone();
+        let scope = scope(uid, &bundle_id);
+        let out = tokio::task::spawn_blocking(move || engine.detokenize(&text, &scope))
+            .await
+            .map_err(internal)?
+            .map_err(internal)?;
+        Ok(DetokenizeResult { text: out.text, replaced: out.replaced })
+    }
+
+    /// "Paste the original": the same report again, now `redacted: false` (parrot upserts).
+    pub fn report_override(&self, event_id: &str) -> Result<(), IpcError> {
+        let mut state = self.state.write().unwrap();
+        if !state.config.as_ref().and_then(|c| c.active_policy()).is_some_and(|p| p.allow_bypass_redaction) {
+            return Err(IpcError { code: "forbidden".into(), message: "bypass not allowed by policy".into() });
+        }
+        let event = state.text_events.get(event_id).ok_or_else(|| bad_request("unknown event"))?;
+        let report = SensitiveDataReport {
+            session_id: event_id.parse().map_err(|_| bad_request("bad event id"))?,
+            service_id: event.service_id.clone(),
+            occurred_at: event.occurred_at,
+            authorization_status: None,
+            text: Some(TextSnapshot { detections: event.counts.clone(), redacted: false }),
+            files: None,
+        };
+        let (app, types) = (event.app_name.clone(), event.types.clone());
+        push_recent(&mut state, event_id.to_owned(), "originalPasted", &app, &types);
+        drop(state);
+        self.queue_report(report);
+        Ok(())
+    }
+
+    // ---------- files ----------
+
+    pub async fn scan_file(&self, path: String, bundle_id: String, deadline_ms: Option<u64>) -> ScanFileResult {
+        let allow = |reason: &str| ScanFileResult { decision: "allow".into(), reason: reason.into(), types: vec![], event_id: None };
+        let Some(target) = self.target(&bundle_id) else { return allow("notTarget") };
+        let path_ref = Path::new(&path);
+        let Ok(identity) = FileIdentity::of(path_ref) else { return allow("unsupported") };
+
+        if self.bypassed(&identity) {
+            return allow("bypass");
+        }
+        let _guard = self.scan_lock.lock().await;
+        if let Some((cached, _)) = self.state.read().unwrap().scan_cache.get(&identity).cloned() {
+            if cached.decision == "deny" {
+                self.notify_blocked(&identity, &path, &bundle_id, &target, &cached);
+            }
+            return cached;
+        }
+
+        let deadline = deadline_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+        let engine = self.engine.clone();
+        let options = target.options.clone();
+        let scan_path = path.clone();
+        let scanned = tokio::task::spawn_blocking(move || engine.scan_path(Path::new(&scan_path), &options, deadline)).await;
+
+        let result = match scanned {
+            Ok(Ok(FileScan::Scanned { detections, format, counts })) if !detections.is_empty() => {
+                let event_id = Uuid::new_v4();
+                let types = type_counts(&detections);
+                self.queue_report(SensitiveDataReport {
+                    session_id: event_id,
+                    service_id: target.service_id.clone(),
+                    occurred_at: Utc::now(),
+                    authorization_status: None,
+                    text: None,
+                    files: Some(vec![FileSnapshot {
+                        key: file_key(path_ref, &identity),
+                        format,
+                        detections: snapshot_counts(&counts),
+                    }]),
+                });
+                ScanFileResult { decision: "deny".into(), reason: "detections".into(), types, event_id: Some(event_id.to_string()) }
+            }
+            Ok(Ok(FileScan::Scanned { .. })) => allow("clean"),
+            Ok(Ok(FileScan::Unsupported { .. })) => allow("unsupported"),
+            // Fail closed, as the extension: what could not be read is not known to be clean.
+            Ok(Ok(FileScan::Oversized { .. })) | Ok(Ok(FileScan::Error { .. })) => ScanFileResult {
+                decision: "deny".into(),
+                reason: "error".into(),
+                types: vec![],
+                event_id: Some(Uuid::new_v4().to_string()),
+            },
+            // Out of time: never make the AI app unusable; the ES client allows.
+            Ok(Err(riot_detect::Error::Timeout)) => return allow("timeout"),
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "file scan failed");
+                ScanFileResult { decision: "deny".into(), reason: "error".into(), types: vec![], event_id: Some(Uuid::new_v4().to_string()) }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "file scan task failed");
+                return allow("timeout");
+            }
+        };
+
+        {
+            let mut state = self.state.write().unwrap();
+            if state.scan_cache.len() >= SCAN_CACHE {
+                let oldest = state.scan_cache.iter().min_by_key(|(_, (_, at))| *at).map(|(k, _)| *k);
+                oldest.map(|k| state.scan_cache.remove(&k));
+            }
+            state.scan_cache.insert(identity, (result.clone(), Instant::now()));
+        }
+        if result.decision == "deny" {
+            self.notify_blocked(&identity, &path, &bundle_id, &target, &result);
+        }
+        result
+    }
+
+    fn notify_blocked(&self, identity: &FileIdentity, path: &str, bundle_id: &str, target: &Target, result: &ScanFileResult) {
+        {
+            let mut notices = self.last_block_notice.lock().unwrap();
+            if notices.get(identity).is_some_and(|at| at.elapsed() < BLOCK_NOTIFY_DEBOUNCE) {
+                return;
+            }
+            notices.insert(*identity, Instant::now());
+        }
+        let Some(event_id) = result.event_id.clone() else { return };
+        {
+            let mut state = self.state.write().unwrap();
+            state.blocked_files.insert(event_id.clone(), *identity);
+            push_recent(&mut state, event_id.clone(), "fileBlocked", &target.app_name, &result.types);
+        }
+        let file_name = Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let _ = self.events.send(Event::FileBlocked {
+            event_id,
+            file_name,
+            bundle_id: bundle_id.to_owned(),
+            app_name: target.app_name.clone(),
+            types: result.types.clone(),
+            // An unreadable file is never bypassable: there is nothing to vouch for.
+            allow_bypass: target.allow_bypass && result.reason == "detections",
+        });
+    }
+
+    fn bypassed(&self, identity: &FileIdentity) -> bool {
+        let mut state = self.state.write().unwrap();
+        state.bypasses.retain(|(_, until)| *until > Instant::now());
+        state.bypasses.iter().any(|(id, _)| id == identity)
+    }
+
+    pub fn grant_file_bypass(&self, event_id: &str) -> Result<(), IpcError> {
+        let mut state = self.state.write().unwrap();
+        if !state.config.as_ref().and_then(|c| c.active_policy()).is_some_and(|p| p.allow_bypass_redaction) {
+            return Err(IpcError { code: "forbidden".into(), message: "bypass not allowed by policy".into() });
+        }
+        let identity = *state.blocked_files.get(event_id).ok_or_else(|| bad_request("unknown event"))?;
+        state.bypasses.push((identity, Instant::now() + BYPASS_TTL));
+        let recent = state.recent.iter().find(|e| e.event_id == event_id).cloned();
+        if let Some(e) = recent {
+            push_recent(&mut state, event_id.to_owned(), "fileAllowedByUser", &e.app_name, &e.types);
+        }
+        Ok(())
+    }
+
+    // ---------- reports ----------
+
+    fn queue_report(&self, report: SensitiveDataReport) {
+        if let Err(e) = self.spool.push(&report) {
+            tracing::error!(error = %e, "could not spool report");
+        }
+        self.reports_pending.notify_one();
+    }
+
+    // ---------- views ----------
+
+    pub fn popup_state(&self) -> PopupState {
+        let protected_apps = self.target_apps();
+        let state = self.state.read().unwrap();
+        let workspace = state.config.as_ref().and_then(|c| c.workspace.as_ref());
+        let policy = state.config.as_ref().and_then(|c| c.active_policy());
+        let view = if state.settings.is_none() {
+            PopupView::NotConfigured
+        } else if state.config.is_none() {
+            match &state.last_error {
+                Some(message) => PopupView::Error { message: message.clone() },
+                None => PopupView::Loading,
+            }
+        } else if policy.is_none() {
+            PopupView::Standby
+        } else {
+            match state.config.as_ref().and_then(|c| c.employee.as_ref()) {
+                Some(e) => PopupView::SignedIn { name: e.name.clone(), redactions: e.redactions_last_30_days },
+                None => PopupView::Reconnect,
+            }
+        };
+        PopupState {
+            view,
+            bot_name: workspace.map(|w| w.bot_branding.name.clone()).unwrap_or_else(|| "Albert".into()),
+            bot_icon_url: workspace.and_then(|w| w.bot_branding.icon_url.clone()),
+            company: workspace.and_then(|w| w.branding_name.clone()),
+            portal_url: workspace.map(|w| w.portal_url.clone()),
+            allow_bypass: policy.is_some_and(|p| p.allow_bypass_redaction),
+            protected_apps,
+            recent_events: state.recent.iter().cloned().collect(),
+        }
+    }
+
+    pub async fn status(&self) -> Status {
+        let engine = self.engine.clone();
+        let heap = tokio::task::spawn_blocking(move || engine.heap_stats()).await.ok().and_then(Result::ok);
+        let target_apps = self.target_apps();
+        let state = self.state.read().unwrap();
+        Status {
+            version: self.version.into(),
+            configured: state.settings.is_some(),
+            device_id: state.enrollment.as_ref().map(|e| e.device_id.clone()),
+            monitoring: state.config.as_ref().and_then(|c| c.active_policy()).is_some(),
+            last_sync: state.last_sync.map(|t| t.to_rfc3339()),
+            last_error: state.last_error.clone(),
+            engine_heap_mib: heap.map_or(0.0, |h| h.malloc_size as f64 / 1_048_576.0),
+            target_apps,
+            pending_reports: self.spool.len(),
+        }
+    }
+}
+
+/// Token memory is per user and per app: one user's tokens never resolve in another's session.
+fn scope(uid: u32, bundle_id: &str) -> String {
+    format!("{uid}:{bundle_id}")
+}
+
+fn push_recent(state: &mut State, event_id: String, kind: &str, app_name: &str, types: &[TypeCount]) {
+    state.recent.push_front(RecentEvent {
+        event_id,
+        at: Utc::now().to_rfc3339(),
+        kind: kind.into(),
+        app_name: app_name.into(),
+        types: types.to_vec(),
+    });
+    state.recent.truncate(RECENT_EVENTS);
+}
+
+/// Distinct values per flag, with the catalog label, most frequent first.
+fn type_counts(detections: &[Detection]) -> Vec<TypeCount> {
+    let mut by_flag: Vec<(String, String, Vec<&str>)> = vec![];
+    for d in detections {
+        match by_flag.iter_mut().find(|(f, _, _)| *f == d.flag) {
+            Some((_, _, values)) if !values.contains(&d.value.as_str()) => values.push(&d.value),
+            Some(_) => {}
+            None => by_flag.push((d.flag.clone(), d.label.clone(), vec![&d.value])),
+        }
+    }
+    let mut out: Vec<TypeCount> =
+        by_flag.into_iter().map(|(flag, label, v)| TypeCount { flag, label, count: v.len() as u32 }).collect();
+    out.sort_by_key(|t| std::cmp::Reverse(t.count));
+    out
+}
+
+fn snapshot_counts(counts: &[riot_detect::TypeCount]) -> Vec<SnapshotDetection> {
+    counts.iter().map(|c| SnapshotDetection { kind: c.kind.clone(), count: c.count }).collect()
+}
+
+/// The extension's `fileKey`: sha-256 over `[name, size, lastModified, type]`, content-free.
+fn file_key(path: &Path, identity: &FileIdentity) -> String {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let last_modified_ms = (identity.mtime_ns / 1_000_000) as i64;
+    let serialized = serde_json::to_string(&(name, identity.size, last_modified_ms, "")).unwrap_or_default();
+    hex::encode(sha2::Sha256::digest(serialized.as_bytes()))
+}

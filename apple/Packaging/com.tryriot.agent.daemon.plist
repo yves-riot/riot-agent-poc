@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Registered by Riot.app with SMAppService.daemon(plistName:); pre-approved by the MDM's
+     com.apple.servicemanagement payload (rule: TeamIdentifier). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.tryriot.agent.daemon</string>
+  <key>BundleProgram</key><string>Contents/MacOS/riot-daemon</string>
+  <key>AssociatedBundleIdentifiers</key><array><string>com.tryriot.agent</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardErrorPath</key><string>/Library/Logs/Riot/daemon.log</string>
+</dict>
+</plist>

@@ -1,0 +1,34 @@
+[workspace]
+resolver = "3"
+members = ["riot-detect", "riot-api", "riot-ipc", "riot-daemon"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "signal", "fs"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+plist = "1"
+sha2 = "0.11"
+hex = "0.4"
+libc = "0.2"
+hostname = "0.4"
+riot-detect = { path = "riot-detect" }
+riot-api = { path = "riot-api" }
+riot-ipc = { path = "riot-ipc" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Runs as root after the MDM installed the package. Starts Riot.app in the console user's
+# session once: on first launch it registers its daemon, its per-user agent (which then keeps it
+# running at every login) and its ES extension, all pre-approved by the MDM profile.
+user=$(stat -f %Su /dev/console)
+[ "$user" = root ] || [ "$user" = loginwindow ] && exit 0 # nobody logged in: next login starts it
+uid=$(id -u "$user")
+launchctl asuser "$uid" sudo -u "$user" open -g /Applications/Riot.app
+exit 0

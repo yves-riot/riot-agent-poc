@@ -1,0 +1,7 @@
+node_modules/
+js/dist/
+target/
+.DS_Store
+*.xcodeproj/xcuserdata/
+apple/build/
+.build/

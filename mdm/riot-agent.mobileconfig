@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Riot agent: everything the agent needs, pre-approved, so users see no prompt.
+  Deploy this profile BEFORE Riot.pkg. Replace the __PLACEHOLDERS__ (render-profile.sh does it).
+    __TEAM_ID__            Riot's Apple Developer team id
+    __API_URL__            e.g. https://parrot.tryriot.com/portal
+    __WORKSPACE_ID__       the customer's workspace id
+    __ENROLLMENT_SECRET__  the workspace's rbx_ secret (same as the browser extension's)
+    __EMPLOYEE_EMAIL__     the MDM's per-device email variable (Iru/Jamf: $EMAIL, Intune: {{mail}})
+-->
+<plist version="1.0">
+<dict>
+  <key>PayloadDisplayName</key><string>Riot Agent</string>
+  <key>PayloadDescription</key><string>Protects sensitive data in AI desktop apps.</string>
+  <key>PayloadIdentifier</key><string>com.tryriot.agent.profile</string>
+  <key>PayloadOrganization</key><string>Riot</string>
+  <key>PayloadScope</key><string>System</string>
+  <key>PayloadType</key><string>Configuration</string>
+  <key>PayloadUUID</key><string>6F1E7A52-3C1B-4B7E-9C5A-2A0D3C1E9B10</string>
+  <key>PayloadVersion</key><integer>1</integer>
+  <key>PayloadRemovalDisallowed</key><true/>
+  <key>PayloadContent</key>
+  <array>
+
+    <!-- 1. Endpoint Security system extension: allowed, and not removable by the user. -->
+    <dict>
+      <key>PayloadType</key><string>com.apple.system-extension-policy</string>
+      <key>PayloadIdentifier</key><string>com.tryriot.agent.profile.sysext</string>
+      <key>PayloadUUID</key><string>0B7C4E7A-1D2E-4F3A-8B9C-1E2F3A4B5C61</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>AllowUserOverrides</key><false/>
+      <key>AllowedSystemExtensions</key>
+      <dict><key>__TEAM_ID__</key><array><string>com.tryriot.agent.es</string></array></dict>
+      <key>AllowedSystemExtensionTypes</key>
+      <dict><key>__TEAM_ID__</key><array><string>EndpointSecurityExtension</string></array></dict>
+      <key>NonRemovableSystemExtensions</key>
+      <dict><key>__TEAM_ID__</key><array><string>com.tryriot.agent.es</string></array></dict>
+    </dict>
+
+    <!-- 2. Privacy (PPPC): Full Disk Access for the ES extension (required for any ES client)
+            and for the daemon, which reads the documents it scans. -->
+    <dict>
+      <key>PayloadType</key><string>com.apple.TCC.configuration-profile-policy</string>
+      <key>PayloadIdentifier</key><string>com.tryriot.agent.profile.pppc</string>
+      <key>PayloadUUID</key><string>3C9D2B1A-5E6F-4A7B-8C9D-2F3A4B5C6D72</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>Services</key>
+      <dict>
+        <key>SystemPolicyAllFiles</key>
+        <array>
+          <dict>
+            <key>Identifier</key><string>com.tryriot.agent.es</string>
+            <key>IdentifierType</key><string>bundleID</string>
+            <key>CodeRequirement</key>
+            <string>identifier "com.tryriot.agent.es" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "__TEAM_ID__"</string>
+            <key>Authorization</key><string>Allow</string>
+          </dict>
+          <dict>
+            <key>Identifier</key><string>/Applications/Riot.app/Contents/MacOS/riot-daemon</string>
+            <key>IdentifierType</key><string>path</string>
+            <key>CodeRequirement</key>
+            <string>identifier "com.tryriot.agent.riot-daemon" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "__TEAM_ID__"</string>
+            <key>Authorization</key><string>Allow</string>
+          </dict>
+        </array>
+      </dict>
+    </dict>
+
+    <!-- 3. Managed Login Items (macOS 13+): the daemon and the per-user agent registered with
+            SMAppService are approved and cannot be switched off in System Settings. -->
+    <dict>
+      <key>PayloadType</key><string>com.apple.servicemanagement</string>
+      <key>PayloadIdentifier</key><string>com.tryriot.agent.profile.loginitems</string>
+      <key>PayloadUUID</key><string>5E1F3A2B-7C8D-4E9F-A0B1-3C4D5E6F7A83</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>Rules</key>
+      <array>
+        <dict>
+          <key>RuleType</key><string>TeamIdentifier</string>
+          <key>RuleValue</key><string>__TEAM_ID__</string>
+          <key>Comment</key><string>Riot agent daemon and menu bar app</string>
+        </dict>
+      </array>
+    </dict>
+
+    <!-- 4. The agent's settings, read by the daemon from /Library/Managed Preferences. -->
+    <dict>
+      <key>PayloadType</key><string>com.tryriot.agent</string>
+      <key>PayloadIdentifier</key><string>com.tryriot.agent.profile.settings</string>
+      <key>PayloadUUID</key><string>7A2B4C3D-9E0F-4A1B-B2C3-4D5E6F7A8B94</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>ApiUrl</key><string>__API_URL__</string>
+      <key>WorkspaceId</key><string>__WORKSPACE_ID__</string>
+      <key>EnrollmentSecret</key><string>__ENROLLMENT_SECRET__</string>
+      <key>EmployeeEmail</key><string>__EMPLOYEE_EMAIL__</string>
+    </dict>
+
+    <!-- 5. Pasteboard privacy ("Paste from Other Apps", macOS 15.4+): no PPPC key is known for
+            it as of this writing; see README "Open questions". If Apple adds one, it goes here. -->
+  </array>
+</dict>
+</plist>

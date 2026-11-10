@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.tryriot.agent.es</string>
+  <key>CFBundleName</key><string>RiotES</string>
+  <key>CFBundleExecutable</key><string>com.tryriot.agent.es</string>
+  <key>CFBundlePackageType</key><string>SYSX</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>NSSystemExtensionUsageDescription</key>
+  <string>Riot blocks AI apps from uploading documents that contain sensitive data.</string>
+</dict>
+</plist>

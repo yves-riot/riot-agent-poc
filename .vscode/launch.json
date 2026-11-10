@@ -1,0 +1,24 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:riot-agent-poc-opus}/apple/RiotAgent",
+      "name": "Debug RiotAgent (apple/RiotAgent)",
+      "target": "RiotAgent",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug RiotAgent (apple/RiotAgent)"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:riot-agent-poc-opus}/apple/RiotAgent",
+      "name": "Release RiotAgent (apple/RiotAgent)",
+      "target": "RiotAgent",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release RiotAgent (apple/RiotAgent)"
+    }
+  ]
+}
