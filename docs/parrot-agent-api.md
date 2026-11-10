@@ -11,8 +11,9 @@ one admin policy drives both products.
 | `POST enroll` | `Authorization: Bearer rbx_…` (the workspace secret the extension already uses) + `X-Workspace-Id` |
 | everything else | `Authorization: Bearer <device_token>` from `enroll` |
 
-Every call also sends `X-Agent-Version`. A 401 makes the agent drop its credential and
-re-enroll (backoff 15 → 30 → 60 min). Reuse `browser_extension_auth_plug.ex` for the `rbx_` check;
+Every call also sends `X-Agent-Version`. A 401 on the device token makes the agent drop it and
+enroll again at once; if enrolling is refused too (bad `rbx_` secret), it retries with the
+extension's backoff (15 → 30 → 60 min). Reuse `browser_extension_auth_plug.ex` for the `rbx_` check;
 the device token is new (store its SHA-256, like the workspace secret).
 
 ## `POST /api/agent/enroll`

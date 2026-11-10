@@ -1,5 +1,6 @@
-//! Background work against parrot: enrollment, config refresh (15 min, with the extension's
-//! 15 → 30 → 60 min backoff on 401), heartbeat, and the report outbox.
+//! Background work against parrot: enrollment, config refresh (15 min), heartbeat, and the
+//! report outbox. A rejected device token is dropped and the device enrolls again at once; the
+//! extension's 15 → 30 → 60 min backoff applies when enrolling itself is refused.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,9 +31,8 @@ pub async fn run(agent: Arc<Agent>) {
                 REFRESH
             }
             Err(ApiError::Unauthenticated) => {
-                // Revoked device or rotated secret: drop the credential and re-enroll later.
-                Enrollment::remove(&agent.paths.data_dir);
-                agent.state.write().unwrap().enrollment = None;
+                // Refused even after enrolling again: wrong or rotated workspace secret.
+                forget_enrollment(&agent);
                 set_error(&agent, "device not authorized by parrot");
                 auth_errors += 1;
                 AUTH_BACKOFF[(auth_errors - 1).min(AUTH_BACKOFF.len() - 1)]
@@ -81,8 +81,18 @@ async fn sync_once(agent: &Agent, facts: &DeviceFacts) -> Result<Synced, ApiErro
     };
 
     let client = Client::new(&settings.api_url, agent.version)?;
-    let enrollment = ensure_enrolled(agent, &client, &settings, facts).await?;
-    let config = client.config(&enrollment.device_token).await?;
+    let (mut enrollment, fresh) = ensure_enrolled(agent, &client, &settings, facts).await?;
+    let config = match client.config(&enrollment.device_token).await {
+        // A stored token parrot no longer knows (device revoked, token rotated, parrot's data
+        // reset): enroll again now rather than after the auth backoff.
+        Err(ApiError::Unauthenticated) if !fresh => {
+            tracing::info!(device_id = %enrollment.device_id, "device token rejected; enrolling again");
+            forget_enrollment(agent);
+            enrollment = ensure_enrolled(agent, &client, &settings, facts).await?.0;
+            client.config(&enrollment.device_token).await?
+        }
+        other => other?,
+    };
 
     let installed = config
         .active_policy()
@@ -127,15 +137,21 @@ async fn sync_once(agent: &Agent, facts: &DeviceFacts) -> Result<Synced, ApiErro
     Ok(Synced::Done)
 }
 
+fn forget_enrollment(agent: &Agent) {
+    Enrollment::remove(&agent.paths.data_dir);
+    agent.state.write().unwrap().enrollment = None;
+}
+
+/// The device's credential, enrolling when there is none. `true` when it was just issued.
 async fn ensure_enrolled(
     agent: &Agent,
     client: &Client,
     settings: &ManagedSettings,
     facts: &DeviceFacts,
-) -> Result<Enrollment, ApiError> {
+) -> Result<(Enrollment, bool), ApiError> {
     let current = agent.state.read().unwrap().enrollment.clone();
     if let Some(e) = current.filter(|e| e.workspace_id == settings.workspace_id && e.api_url == settings.api_url) {
-        return Ok(e);
+        return Ok((e, false));
     }
     let response = client
         .enroll(
@@ -163,7 +179,7 @@ async fn ensure_enrolled(
     }
     tracing::info!(device_id = %enrollment.device_id, "device enrolled");
     agent.state.write().unwrap().enrollment = Some(enrollment.clone());
-    Ok(enrollment)
+    Ok((enrollment, true))
 }
 
 /// Sends spooled reports whenever one is queued, and retries every minute while some remain.
