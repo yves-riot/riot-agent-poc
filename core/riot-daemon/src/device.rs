@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::process::Command;
 
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -41,9 +42,16 @@ fn run(cmd: &str, args: &[&str]) -> Option<String> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Enrollment {
     pub device_id: String,
-    pub device_token: String,
+    /// `SecretString` keeps the bearer token out of `{:?}` and zeroes it on drop.
+    #[serde(serialize_with = "expose_for_storage")]
+    pub device_token: SecretString,
     pub workspace_id: String,
     pub api_url: String,
+}
+
+/// `SecretString` refuses to serialize by design; the enrollment file is the one place it must.
+fn expose_for_storage<S: serde::Serializer>(token: &SecretString, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(token.expose_secret())
 }
 
 impl Enrollment {

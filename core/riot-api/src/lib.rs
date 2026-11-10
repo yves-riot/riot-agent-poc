@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 pub const MONITORING_POLICY_KIND: &str = "browser_extension_sensitive_data_monitoring";
@@ -36,10 +37,11 @@ pub struct EnrollRequest {
     pub employee_email: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct EnrollResponse {
     pub device_id: String,
-    pub device_token: String,
+    /// `SecretString` keeps the bearer token out of `{:?}` and zeroes it on drop.
+    pub device_token: SecretString,
 }
 
 // ---------- config ----------
@@ -211,24 +213,25 @@ impl Client {
         decode(resp).await
     }
 
-    pub async fn config(&self, device_token: &str) -> Result<AgentConfig> {
+    pub async fn config(&self, device_token: &SecretString) -> Result<AgentConfig> {
         let resp = self.authed(self.http.get(self.url("config")), device_token).send().await?;
         decode(resp).await
     }
 
-    pub async fn heartbeat(&self, device_token: &str, heartbeat: &Heartbeat) -> Result<()> {
+    pub async fn heartbeat(&self, device_token: &SecretString, heartbeat: &Heartbeat) -> Result<()> {
         let resp = self.authed(self.http.post(self.url("heartbeat")), device_token).json(heartbeat).send().await?;
         check(resp).await
     }
 
-    pub async fn report(&self, device_token: &str, report: &SensitiveDataReport) -> Result<()> {
+    pub async fn report(&self, device_token: &SecretString, report: &SensitiveDataReport) -> Result<()> {
         let resp =
             self.authed(self.http.post(self.url("sensitive_data_report")), device_token).json(report).send().await?;
         check(resp).await
     }
 
-    fn authed(&self, req: reqwest::RequestBuilder, device_token: &str) -> reqwest::RequestBuilder {
-        req.bearer_auth(device_token).header("X-Agent-Version", &self.agent_version)
+    /// The only place the device token leaves its `SecretString`.
+    fn authed(&self, req: reqwest::RequestBuilder, device_token: &SecretString) -> reqwest::RequestBuilder {
+        req.bearer_auth(device_token.expose_secret()).header("X-Agent-Version", &self.agent_version)
     }
 }
 

@@ -24,6 +24,7 @@ sha2 = "0.11"
 hex = "0.4"
 libc = "0.2"
 hostname = "0.4"
+secrecy = { version = "0.10", features = ["serde"] }
 riot-detect = { path = "riot-detect" }
 riot-api = { path = "riot-api" }
 riot-ipc = { path = "riot-ipc" }
