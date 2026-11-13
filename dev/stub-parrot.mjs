@@ -33,13 +33,6 @@ const policy = () => ({
       desktop_apps: [{ platform: 'macos', bundle_id: 'com.anthropic.claudefordesktop', team_id: 'Q6L2SF6YDW',
         executable_prefixes: ['/Applications/Claude.app/'] }],
     },
-    {
-      // Not a real AI service: lets the clipboard guard be tried without either app.
-      service_id: 'demo', display_name: 'TextEdit (démo)', authorized: false, logo_url: null,
-      domain: 'example.invalid', domains: [], excluded_domains: [], account_detection: null,
-      desktop_apps: [{ platform: 'macos', bundle_id: 'com.apple.TextEdit', team_id: null,
-        executable_prefixes: ['/System/Applications/TextEdit.app/'] }],
-    },
   ],
 });
 
