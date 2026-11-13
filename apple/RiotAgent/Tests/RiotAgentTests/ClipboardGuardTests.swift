@@ -65,8 +65,8 @@ private final class FakePasteboard: PasteboardAccess {
     func writeTexts(_ texts: [String: String]) {
         copy(texts.mapValues { Data($0.utf8) })
     }
-    func writePromisedText(marker: String, provide: @escaping () -> String) {
-        items = [[marker: Data()]]
+    func writePromisedText(markers: [String], provide: @escaping () -> String) {
+        items = [Dictionary(uniqueKeysWithValues: markers.map { ($0, Data()) })]
         promise = provide
         changeCount += 1
     }
@@ -167,6 +167,7 @@ final class ClipboardGuardTests: XCTestCase {
         await guardian.waitIdle()
         XCTAssertTrue(pb.isPromised)
         XCTAssertTrue(pb.hasType(ClipboardGuard.marker))
+        XCTAssertTrue(pb.hasType("org.nspasteboard.TransientType"), "clipboard managers skip it unread")
         XCTAssertNil(pb.items.first?["public.rtf"], "rich representations would leak the value")
         XCTAssertEqual(pastedEvents, 0)
         XCTAssertEqual(backend.pastes, [])

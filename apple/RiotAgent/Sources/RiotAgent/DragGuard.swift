@@ -126,7 +126,7 @@ final class DragGuard {
     }
 
     private func promise() {
-        board.writePromisedText(marker: ClipboardGuard.marker) { [weak self] in
+        board.writePromisedText(markers: ClipboardGuard.promiseMarkers) { [weak self] in
             MainActor.assumeIsolated { self?.provide() ?? "" }
         }
         lastSeen = board.changeCount
