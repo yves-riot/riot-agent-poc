@@ -76,8 +76,14 @@ cd apple/RiotAgent && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer s
 - **Clipboard:** verified on macOS 27.2 against TextEdit: swap on activation, restore on leave,
   detokenize of copied answers, HUD. No pasteboard-privacy alert was raised on this Mac.
   Since then, the redacted text is a promised pasteboard item: the HUD and the report wait for
-  the read that a paste does (⌘V, Edit menu, context menu). A read counts as a paste when a
-  ⌘ shortcut or a click came after our write (`CGEventSource` counters, no permission).
+  the read that a paste does (⌘V, Edit menu, context menu). A read 150 ms or more after the
+  promise was written is a paste; an earlier one is a clipboard manager or a sync reacting to
+  the write. Claude Desktop reads only to paste (no read on activation in 2 to 6 s), 0.3 to
+  1.8 s after the write. The promise is re-armed 0.5 s after a read (done at once, it emptied 6 reads in
+  20), and a re-armed promise counts a read as a paste only while ⌘ is held.
+  Guessing the gesture from `CGEventSource.secondsSinceLastEventType` did not work: without
+  Input Monitoring those counters move in 0.5 s steps and late, so a ⌘V read 0.3 s later still
+  looked like the gesture before it.
 
 ## Not done / open
 
@@ -93,14 +99,20 @@ cd apple/RiotAgent && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer s
   - Developer ID signing + notarization (`build-pkg.sh` takes the identities).
   - Building the pkg from this sandboxed shell leaves `._*` AppleDouble entries for
     `com.apple.provenance`; build on CI.
-- **Paste detection limits:** a read with no fresh gesture (an Electron app reading on
-  activation, a clipboard manager) gets the redacted text silently, and the promise is re-armed
-  once. An app that reads on every clipboard change uses that up, and its real paste is then
-  redacted but shows no HUD and sends no report. Still to verify on Claude Desktop; the fallback
-  is a ⌘V event tap with Accessibility (PPPC). Dragging text into the app is not covered.
-  "Paste the original" puts it on the clipboard: the user undoes and pastes again.
-- **Copy out of the AI app:** only the plain text is detokenized; the rich formatting of the
-  copied answer is dropped.
+- **Paste detection limits:** a clipboard manager that reads 150 ms or more after our write
+  counts as a paste (HUD and report without one). After the first paste, a paste from the Edit
+  or context menu (no ⌘) is redacted but shows no HUD. A second ⌘V within 0.5 s of the first
+  gets the cached text without a HUD of its own. "Paste the original" puts it on the
+  clipboard: the user undoes and pastes again.
+- **Drag and drop of text** (`DragGuard`): a text drag is replaced with a
+  promise on the drag pasteboard, read by the app under the pointer: a protected app gets the
+  text redacted at that moment (a blocking daemon call, 2 s at most), others the original, or
+  the values back for a drag out of a protected app. HUD and report on release over the
+  protected app. The text of every text drag is read when it starts (detection runs only for a
+  protected app). Files and images are left to RiotES. Not yet checked with ChatGPT.
+- **Copy out of the AI app:** plain text, HTML and RTF get the real values back, each with its
+  escaping (markdown-escaped tokens such as `\[IBAN\_1\]` included); other representations of
+  the copy are dropped.
 - **Pasteboard privacy:** no PPPC key is known to pre-approve "Paste from Other Apps". The popup
   shows the state (`NSPasteboard.accessBehavior`) and links to Settings.
 - **Product:** authorized services (account detection has no desktop equivalent), and whether to

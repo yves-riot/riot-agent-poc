@@ -84,38 +84,53 @@ final class DaemonClient: @unchecked Sendable {
     // MARK: calls
 
     func call<T: Decodable>(_ method: String, _ params: [String: Any]? = nil, timeout: TimeInterval = 15) async throws -> T {
-        let data = try await rawCall(method, params, timeout: timeout)
+        let data = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+            send(method, params, timeout: timeout) { cont.resume(with: $0) }
+        }
         return try JSONDecoder().decode(T.self, from: data)
     }
 
-    private func rawCall(_ method: String, _ params: [String: Any]?, timeout: TimeInterval) async throws -> Data {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
-            lock.lock()
-            if closed {
-                lock.unlock()
-                cont.resume(throwing: Failure.closed)
-                return
-            }
-            let id = nextId
-            nextId += 1
-            // `complete` removes the handler under the lock, so it runs at most once.
-            pending[id] = { cont.resume(with: $0) }
-            var envelope: [String: Any] = ["id": id, "method": method]
-            if let params { envelope["params"] = params }
-            lock.unlock()
+    /// Blocks the calling thread until the reply, for an answer that can't wait (a drop being
+    /// read). The reply arrives on the reader thread, so the main thread may block here.
+    func callNow<T: Decodable>(_ method: String, _ params: [String: Any]? = nil, timeout: TimeInterval) -> T? {
+        let done = DispatchSemaphore(value: 0)
+        let reply = Locked<Result<Data, Error>>(.failure(Failure.timeout))
+        send(method, params, timeout: timeout) { result in
+            reply.set(result)
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + timeout) == .success, case .success(let data) = reply.get() else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
 
-            guard var line = try? JSONSerialization.data(withJSONObject: envelope) else {
-                complete(id, .failure(Failure.connect("unencodable request")))
-                return
-            }
-            line.append(0x0A)
-            if !writeAll(line) {
-                complete(id, .failure(Failure.closed))
-                return
-            }
-            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
-                self?.complete(id, .failure(Failure.timeout))
-            }
+    /// `completion` runs once, on the reader thread or a global queue.
+    private func send(_ method: String, _ params: [String: Any]?, timeout: TimeInterval,
+                      completion: @escaping (Result<Data, Error>) -> Void) {
+        lock.lock()
+        if closed {
+            lock.unlock()
+            completion(.failure(Failure.closed))
+            return
+        }
+        let id = nextId
+        nextId += 1
+        // `complete` removes the handler under the lock, so it runs at most once.
+        pending[id] = completion
+        var envelope: [String: Any] = ["id": id, "method": method]
+        if let params { envelope["params"] = params }
+        lock.unlock()
+
+        guard var line = try? JSONSerialization.data(withJSONObject: envelope) else {
+            complete(id, .failure(Failure.connect("unencodable request")))
+            return
+        }
+        line.append(0x0A)
+        if !writeAll(line) {
+            complete(id, .failure(Failure.closed))
+            return
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+            self?.complete(id, .failure(Failure.timeout))
         }
     }
 
@@ -184,4 +199,13 @@ final class DaemonClient: @unchecked Sendable {
         let data = (try? JSONSerialization.data(withJSONObject: ok, options: .fragmentsAllowed)) ?? Data("null".utf8)
         complete(id, .success(data))
     }
+}
+
+/// A value shared between threads.
+final class Locked<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+    init(_ value: Value) { self.value = value }
+    func get() -> Value { lock.withLock { value } }
+    func set(_ newValue: Value) { lock.withLock { value = newValue } }
 }

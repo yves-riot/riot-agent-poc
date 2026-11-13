@@ -4,7 +4,7 @@ import SwiftUI
 /// App state: the daemon connection, what the popup shows, and the wiring between the clipboard
 /// guard, pushed daemon events and the HUD.
 @MainActor
-final class AppModel: ObservableObject, GuardBackend {
+final class AppModel: ObservableObject, GuardBackend, BlockingBackend {
     @Published private(set) var popup = PopupState.placeholder
     @Published private(set) var connected = false
     @Published private(set) var pasteboardAccess = SystemPasteboard.accessState
@@ -12,6 +12,7 @@ final class AppModel: ObservableObject, GuardBackend {
 
     private var client: DaemonClient?
     private(set) lazy var clipboard = ClipboardGuard(pasteboard: SystemPasteboard(), backend: self)
+    private(set) lazy var drags = DragGuard(board: SystemPasteboard(NSPasteboard(name: .drag)), backend: self)
     lazy var hud = HUDController(model: self)
 
     func start() {
@@ -19,6 +20,10 @@ final class AppModel: ObservableObject, GuardBackend {
             self?.hud.showText(result: result, appName: self?.appName(bundleId) ?? bundleId)
         }
         clipboard.start()
+        drags.onDropped = { [weak self] result, bundleId in
+            self?.hud.showText(result: result, appName: self?.appName(bundleId) ?? bundleId)
+        }
+        drags.start()
         connect()
     }
 
@@ -44,6 +49,7 @@ final class AppModel: ObservableObject, GuardBackend {
         connected = false
         client = nil
         clipboard.targets = [] // no daemon, no decisions: leave the clipboard alone
+        drags.targets = []
         scheduleReconnect()
     }
 
@@ -72,6 +78,7 @@ final class AppModel: ObservableObject, GuardBackend {
             let active: Bool
             if case .signedIn = state.view { active = true } else if case .reconnect = state.view { active = true } else { active = false }
             clipboard.targets = active ? Set(state.protectedApps.map(\.bundleId)) : []
+            drags.targets = clipboard.targets
         }
     }
 
@@ -95,6 +102,16 @@ final class AppModel: ObservableObject, GuardBackend {
     func detokenize(_ text: String, bundleId: String) async throws -> DetokenizeResult {
         guard let client else { throw DaemonClient.Failure.closed }
         return try await client.call("detokenize", ["text": text, "bundleId": bundleId])
+    }
+
+    // MARK: BlockingBackend (a drop is being read: the main thread waits, at most 2 s)
+
+    func redactTextNow(_ text: String, bundleId: String) -> RedactTextResult? {
+        client?.callNow("redactText", ["text": text, "bundleId": bundleId], timeout: 2)
+    }
+
+    func detokenizeNow(_ text: String, bundleId: String) -> DetokenizeResult? {
+        client?.callNow("detokenize", ["text": text, "bundleId": bundleId], timeout: 2)
     }
 
     func reportOverride(pasteId: String) async throws {
