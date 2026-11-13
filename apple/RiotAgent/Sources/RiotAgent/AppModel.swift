@@ -15,7 +15,7 @@ final class AppModel: ObservableObject, GuardBackend {
     lazy var hud = HUDController(model: self)
 
     func start() {
-        clipboard.onRedacted = { [weak self] result, bundleId in
+        clipboard.onPasted = { [weak self] result, bundleId in
             self?.hud.showText(result: result, appName: self?.appName(bundleId) ?? bundleId)
         }
         clipboard.start()
@@ -86,14 +86,20 @@ final class AppModel: ObservableObject, GuardBackend {
         return try await client.call("redactText", ["text": text, "bundleId": bundleId])
     }
 
+    func reportPaste(eventId: String) async throws -> String {
+        guard let client else { throw DaemonClient.Failure.closed }
+        let result: ReportPasteResult = try await client.call("reportPaste", ["eventId": eventId])
+        return result.pasteId
+    }
+
     func detokenize(_ text: String, bundleId: String) async throws -> DetokenizeResult {
         guard let client else { throw DaemonClient.Failure.closed }
         return try await client.call("detokenize", ["text": text, "bundleId": bundleId])
     }
 
-    func reportOverride(eventId: String) async throws {
+    func reportOverride(pasteId: String) async throws {
         guard let client else { throw DaemonClient.Failure.closed }
-        let _: Nothing = try await client.call("reportOverride", ["eventId": eventId])
+        let _: Nothing = try await client.call("reportOverride", ["pasteId": pasteId])
     }
 
     func grantFileBypass(eventId: String) async -> Bool {

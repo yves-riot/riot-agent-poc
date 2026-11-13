@@ -129,7 +129,8 @@ async fn handle(agent: &Agent, uid: u32, request: Request) -> Result<serde_json:
             json(agent.scan_file(path, bundle_id, deadline_ms).await)
         }
         Request::GrantFileBypass { event_id } => json(agent.grant_file_bypass(&event_id)?),
-        Request::ReportOverride { event_id } => json(agent.report_override(&event_id)?),
+        Request::ReportPaste { event_id } => json(agent.report_paste(&event_id)?),
+        Request::ReportOverride { paste_id } => json(agent.report_override(&paste_id)?),
         Request::EsConfig => json(agent.es_config()),
         Request::Refresh => {
             agent.refresh.notify_one();

@@ -5,7 +5,8 @@
 //! riotctl redact <bundle-id> <text>
 //! riotctl detok <bundle-id> <text>
 //! riotctl scan <bundle-id> <path>          (root, or daemon started with RIOT_DEV_ALLOW_SCAN=1)
-//! riotctl bypass <event-id> | override <event-id>
+//! riotctl paste <event-id>                (report a paste of a redactText event)
+//! riotctl bypass <event-id> | override <paste-id>
 //! ```
 
 use std::path::PathBuf;
@@ -26,7 +27,8 @@ fn main() {
         Some("detok") => Request::Detokenize { bundle_id: arg(1), text: arg(2) },
         Some("scan") => Request::ScanFile { bundle_id: arg(1), path: arg(2), deadline_ms: Some(10_000) },
         Some("bypass") => Request::GrantFileBypass { event_id: arg(1) },
-        Some("override") => Request::ReportOverride { event_id: arg(1) },
+        Some("paste") => Request::ReportPaste { event_id: arg(1) },
+        Some("override") => Request::ReportOverride { paste_id: arg(1) },
         _ => usage(),
     };
     let mut client = Client::connect(&socket).unwrap_or_else(|e| {
@@ -55,6 +57,6 @@ fn main() {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: riotctl status|popup|refresh|watch|redact <bundle> <text>|detok <bundle> <text>|scan <bundle> <path>|bypass <event>|override <event>");
+    eprintln!("usage: riotctl status|popup|refresh|watch|redact <bundle> <text>|detok <bundle> <text>|scan <bundle> <path>|paste <event>|bypass <event>|override <paste>");
     std::process::exit(2)
 }

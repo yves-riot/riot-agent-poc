@@ -10,8 +10,8 @@ use chrono::{DateTime, Utc};
 use riot_api::{AgentConfig, FileSnapshot, SensitiveDataReport, SnapshotDetection, TextSnapshot};
 use riot_detect::{Detection, Engine, FileScan, Options};
 use riot_ipc::{
-    DetokenizeResult, EsConfig, Event, IpcError, WatchedApp, PopupState, PopupView, RecentEvent, RedactTextResult, ScanFileResult, Status,
-    TargetApp, TypeCount,
+    DetokenizeResult, EsConfig, Event, IpcError, PopupState, PopupView, RecentEvent, RedactTextResult, ReportPasteResult, ScanFileResult,
+    Status, TargetApp, TypeCount, WatchedApp,
 };
 use sha2::Digest;
 use tokio::sync::{Notify, broadcast};
@@ -27,6 +27,12 @@ const BYPASS_TTL: Duration = Duration::from_secs(60);
 const BLOCK_NOTIFY_DEBOUNCE: Duration = Duration::from_secs(5);
 const RECENT_EVENTS: usize = 20;
 const SCAN_CACHE: usize = 512;
+/// Max entries in `State::redactions`, one per redacted clipboard, kept so `report_paste`
+/// can report each paste of it.
+const MAX_REDACTIONS: usize = 200;
+/// Max entries in `State::pastes`, one per reported paste, kept so `report_override` can
+/// re-report it as "paste the original".
+const MAX_PASTES: usize = 200;
 
 #[derive(Default)]
 pub struct State {
@@ -37,13 +43,15 @@ pub struct State {
     pub last_error: Option<String>,
     pub installed: HashMap<String, bool>,
     recent: VecDeque<RecentEvent>,
-    text_events: HashMap<String, TextEvent>,
+    redactions: HashMap<String, Redaction>,
+    /// Paste id (the report's session) → its `redactions` key.
+    pastes: HashMap<String, (String, DateTime<Utc>)>,
     blocked_files: HashMap<String, FileIdentity>,
     bypasses: Vec<(FileIdentity, Instant)>,
     scan_cache: HashMap<FileIdentity, (ScanFileResult, Instant)>,
 }
 
-struct TextEvent {
+struct Redaction {
     service_id: String,
     occurred_at: DateTime<Utc>,
     counts: Vec<SnapshotDetection>,
@@ -210,37 +218,27 @@ impl Agent {
             return Ok(RedactTextResult { action: "clean".into(), ..skipped(target.allow_bypass) });
         }
 
+        // Not reported yet: the clipboard is read ahead of a paste that may never come.
+        // `report_paste` reports when the redacted text is actually pasted.
         let types = type_counts(&outcome.detections);
-        let counts = snapshot_counts(&outcome.counts);
         let event_id = Uuid::new_v4();
-        let now = Utc::now();
-        self.queue_report(SensitiveDataReport {
-            session_id: event_id,
-            service_id: target.service_id.clone(),
-            occurred_at: now,
-            authorization_status: None,
-            text: Some(TextSnapshot { detections: counts.clone(), redacted: true }),
-            files: None,
-        });
         {
             let mut state = self.state.write().unwrap();
-            state.text_events.insert(
+            state.redactions.insert(
                 event_id.to_string(),
-                TextEvent {
+                Redaction {
                     service_id: target.service_id,
-                    occurred_at: now,
-                    counts,
+                    occurred_at: Utc::now(),
+                    counts: snapshot_counts(&outcome.counts),
                     app_name: target.app_name.clone(),
                     types: types.clone(),
                 },
             );
-            if state.text_events.len() > 200 {
-                let oldest = state.text_events.iter().min_by_key(|(_, e)| e.occurred_at).map(|(k, _)| k.clone());
-                oldest.map(|k| state.text_events.remove(&k));
+            if state.redactions.len() > MAX_REDACTIONS {
+                let oldest = state.redactions.iter().min_by_key(|(_, e)| e.occurred_at).map(|(k, _)| k.clone());
+                oldest.map(|k| state.redactions.remove(&k));
             }
-            push_recent(&mut state, event_id.to_string(), "textRedacted", &target.app_name, &types);
         }
-        let _ = self.events.send(Event::StateChanged);
         Ok(RedactTextResult {
             action: "redacted".into(),
             text: Some(outcome.text),
@@ -260,25 +258,55 @@ impl Agent {
         Ok(DetokenizeResult { text: out.text, replaced: out.replaced })
     }
 
-    /// "Paste the original": the same report again, now `redacted: false` (parrot upserts).
-    pub fn report_override(&self, event_id: &str) -> Result<(), IpcError> {
+    /// The redacted text of `event_id` was pasted: one report per paste, as the extension's
+    /// paste handler, each with its own session.
+    pub fn report_paste(&self, event_id: &str) -> Result<ReportPasteResult, IpcError> {
+        let paste_id = Uuid::new_v4();
+        let now = Utc::now();
+        let mut state = self.state.write().unwrap();
+        let event = state.redactions.get(event_id).ok_or_else(|| bad_request("unknown event"))?;
+        let report = SensitiveDataReport {
+            session_id: paste_id,
+            service_id: event.service_id.clone(),
+            occurred_at: now,
+            authorization_status: None,
+            text: Some(TextSnapshot { detections: event.counts.clone(), redacted: true }),
+            files: None,
+        };
+        let (app, types) = (event.app_name.clone(), event.types.clone());
+        state.pastes.insert(paste_id.to_string(), (event_id.to_owned(), now));
+        if state.pastes.len() > MAX_PASTES {
+            let oldest = state.pastes.iter().min_by_key(|(_, (_, at))| *at).map(|(k, _)| k.clone());
+            oldest.map(|k| state.pastes.remove(&k));
+        }
+        push_recent(&mut state, paste_id.to_string(), "textRedacted", &app, &types);
+        drop(state);
+        self.queue_report(report);
+        let _ = self.events.send(Event::StateChanged);
+        Ok(ReportPasteResult { paste_id: paste_id.to_string() })
+    }
+
+    /// "Paste the original": the paste's report again, now `redacted: false` (parrot upserts).
+    pub fn report_override(&self, paste_id: &str) -> Result<(), IpcError> {
         let mut state = self.state.write().unwrap();
         if !state.config.as_ref().and_then(|c| c.active_policy()).is_some_and(|p| p.allow_bypass_redaction) {
             return Err(IpcError { code: "forbidden".into(), message: "bypass not allowed by policy".into() });
         }
-        let event = state.text_events.get(event_id).ok_or_else(|| bad_request("unknown event"))?;
+        let (event_id, pasted_at) = state.pastes.get(paste_id).cloned().ok_or_else(|| bad_request("unknown paste"))?;
+        let event = state.redactions.get(&event_id).ok_or_else(|| bad_request("unknown event"))?;
         let report = SensitiveDataReport {
-            session_id: event_id.parse().map_err(|_| bad_request("bad event id"))?,
+            session_id: paste_id.parse().map_err(|_| bad_request("bad paste id"))?,
             service_id: event.service_id.clone(),
-            occurred_at: event.occurred_at,
+            occurred_at: pasted_at,
             authorization_status: None,
             text: Some(TextSnapshot { detections: event.counts.clone(), redacted: false }),
             files: None,
         };
         let (app, types) = (event.app_name.clone(), event.types.clone());
-        push_recent(&mut state, event_id.to_owned(), "originalPasted", &app, &types);
+        push_recent(&mut state, paste_id.to_owned(), "originalPasted", &app, &types);
         drop(state);
         self.queue_report(report);
+        let _ = self.events.send(Event::StateChanged);
         Ok(())
     }
 
@@ -510,4 +538,72 @@ fn file_key(path: &Path, identity: &FileIdentity) -> String {
     let last_modified_ms = (identity.mtime_ns / 1_000_000) as i64;
     let serialized = serde_json::to_string(&(name, identity.size, last_modified_ms, "")).unwrap_or_default();
     hex::encode(sha2::Sha256::digest(serialized.as_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Paths;
+    use riot_detect::EngineConfig;
+
+    const APP: &str = "com.apple.TextEdit";
+    const IBAN: &str = "FR76 3000 6000 0112 3456 7890 189";
+
+    fn agent(name: &str) -> Agent {
+        let dir = std::env::temp_dir().join(format!("riot-agent-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = Paths { settings: dir.join("settings.json"), data_dir: dir.clone(), socket: dir.join("agent.sock") };
+        let agent = Agent::new(paths, Engine::start(EngineConfig::default()).unwrap()).unwrap();
+        let config: AgentConfig = serde_json::from_value(serde_json::json!({
+            "employee": null,
+            "workspace": null,
+            "policies": [{
+                "policy_kind": riot_api::MONITORING_POLICY_KIND,
+                "enabled": true,
+                "allow_bypass_redaction": true,
+                "services": [{
+                    "service_id": "demo",
+                    "display_name": "TextEdit",
+                    "desktop_apps": [{ "platform": "macos", "bundle_id": APP, "team_id": null }]
+                }]
+            }]
+        }))
+        .unwrap();
+        agent.state.write().unwrap().config = Some(config);
+        agent
+    }
+
+    async fn redact(agent: &Agent) -> String {
+        let result = agent.redact_text(501, format!("Mon IBAN {IBAN}"), APP.into()).await.unwrap();
+        assert_eq!(result.action, "redacted");
+        result.event_id.unwrap()
+    }
+
+    #[tokio::test]
+    async fn redacting_alone_reports_nothing() {
+        let agent = agent("redact");
+        redact(&agent).await;
+        assert_eq!(agent.spool.len(), 0);
+        assert!(agent.popup_state().recent_events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn each_paste_is_its_own_report_and_can_be_overridden() {
+        let agent = agent("paste");
+        let event = redact(&agent).await;
+        let first = agent.report_paste(&event).unwrap().paste_id;
+        let second = agent.report_paste(&event).unwrap().paste_id;
+        assert_ne!(first, second);
+        let reports = agent.spool.pending();
+        assert_eq!(reports.len(), 2);
+        assert!(reports.iter().all(|(_, r)| r.text.as_ref().is_some_and(|t| t.redacted)));
+
+        agent.report_override(&second).unwrap();
+        let reports = agent.spool.pending();
+        assert_eq!(reports.len(), 2, "the override upserts the paste's report");
+        let overridden = reports.iter().find(|(_, r)| r.session_id.to_string() == second).unwrap();
+        assert!(!overridden.1.text.as_ref().unwrap().redacted);
+        assert!(agent.report_override(&event).is_err(), "overrides name a paste, not the redaction");
+        assert!(agent.report_paste("nope").is_err());
+    }
 }

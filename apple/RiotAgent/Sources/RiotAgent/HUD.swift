@@ -93,7 +93,7 @@ final class HUDController: ObservableObject {
 
     func pasteOriginal() {
         model?.clipboard.pasteOriginal()
-        show(.steppedAside, autoDismiss: 4)
+        show(.steppedAside, autoDismiss: 8)
     }
 
     func sendFileAnyway(_ blocked: FileBlocked) {
@@ -179,7 +179,9 @@ private struct HUDView: View {
                     .keyboardShortcut(.defaultAction)
             }
         case .steppedAside:
-            header(l.t("redactionGuard.steppedAside.title"), l.t("redactionGuard.steppedAside.body", ["botName": bot]))
+            // Unlike the extension, the agent cannot rewrite the field without Accessibility:
+            // the original is on the clipboard, the user swaps it in themselves.
+            header(l.t("redactionGuard.steppedAside.title"), l.t("agent.text.pasteOriginalHint"))
             HStack { Spacer(); Button(l.t("redactionGuard.steppedAside.close")) { controller.dismiss() } }
         case let .file(blocked):
             header(l.t("redactionGuard.file.intercepted.title", count: 1, ["botName": bot]),

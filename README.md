@@ -46,9 +46,9 @@ apple/build-app.sh                               # → apple/build/Riot.app (ad-
 RIOT_SOCKET=$TMPDIR/riot-dev.sock apple/build/Riot.app/Contents/MacOS/RiotAgent
 ```
 
-Then copy text with an IBAN, switch to TextEdit (the stub's demo app) and paste: you get
-`[IBAN_1]`. Switch away: the original is back. Copy `[IBAN_1]` from TextEdit, paste elsewhere:
-the real value. `RIOT_SOCKET=$TMPDIR/riot-dev.sock core/target/release/riotctl status|popup|watch|…`
+Then copy text with an IBAN and switch to TextEdit (the stub's demo app): nothing shows yet.
+Paste: you get `[IBAN_1]`, and the HUD shows and the report goes out then, once per paste. Switch
+away: the original is back. Copy `[IBAN_1]` from TextEdit, paste elsewhere: the real value. `RIOT_SOCKET=$TMPDIR/riot-dev.sock core/target/release/riotctl status|popup|watch|…`
 talks to the daemon directly; `scan` works unprivileged because `run-dev.sh` sets
 `RIOT_DEV_ALLOW_SCAN=1`.
 
@@ -68,13 +68,16 @@ cd apple/RiotAgent && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer s
 - **Memory:** daemon 16 MB, menu bar app 21 MB (`phys_footprint`), 0 % CPU idle.
   `Riot.app` is 9.8 MB.
 - **Latency:** paste 1 KB 20 ms, 10 KB 160 ms, 64 KB 330 ms; a 1 MiB text file 3.3 s.
-  The paste happens after the switch to the AI app, so it is not in the user's way.
+  Redaction runs on the switch to the AI app, before the paste, so it is not in the user's way.
   The floor on small pastes is `compromise` (about 130 ms per 10k-char chunk).
 - **QuickJS patch:** one source patch is applied at bundle time (`js/build.mjs`, `PATCHES`): the phone
   detector sliced the whole remaining text per match. That is O(1) on V8 but a copy on QuickJS.
   It took a 1 MiB scan from 12.3 s to 3.3 s. It is behaviour-preserving and should be upstreamed.
 - **Clipboard:** verified on macOS 27.2 against TextEdit: swap on activation, restore on leave,
   detokenize of copied answers, HUD. No pasteboard-privacy alert was raised on this Mac.
+  Since then, the redacted text is a promised pasteboard item: the HUD and the report wait for
+  the read that a paste does (⌘V, Edit menu, context menu). A read counts as a paste when a
+  ⌘ shortcut or a click came after our write (`CGEventSource` counters, no permission).
 
 ## Not done / open
 
@@ -90,6 +93,14 @@ cd apple/RiotAgent && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer s
   - Developer ID signing + notarization (`build-pkg.sh` takes the identities).
   - Building the pkg from this sandboxed shell leaves `._*` AppleDouble entries for
     `com.apple.provenance`; build on CI.
+- **Paste detection limits:** a read with no fresh gesture (an Electron app reading on
+  activation, a clipboard manager) gets the redacted text silently, and the promise is re-armed
+  once. An app that reads on every clipboard change uses that up, and its real paste is then
+  redacted but shows no HUD and sends no report. Still to verify on Claude Desktop; the fallback
+  is a ⌘V event tap with Accessibility (PPPC). Dragging text into the app is not covered.
+  "Paste the original" puts it on the clipboard: the user undoes and pastes again.
+- **Copy out of the AI app:** only the plain text is detokenized; the rich formatting of the
+  copied answer is dropped.
 - **Pasteboard privacy:** no PPPC key is known to pre-approve "Paste from Other Apps". The popup
   shows the state (`NSPasteboard.accessBehavior`) and links to Settings.
 - **Product:** authorized services (account detection has no desktop equivalent), and whether to

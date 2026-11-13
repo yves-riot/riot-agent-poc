@@ -75,6 +75,10 @@ struct RedactTextResult: Decodable {
     var allowBypass: Bool
 }
 
+struct ReportPasteResult: Decodable {
+    var pasteId: String
+}
+
 struct DetokenizeResult: Decodable {
     var text: String
     var replaced: Int

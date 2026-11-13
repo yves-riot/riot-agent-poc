@@ -39,9 +39,13 @@ pub enum Request {
     /// "Send anyway": the next open of this file (same inode and mtime) within the TTL is allowed.
     #[serde(rename_all = "camelCase")]
     GrantFileBypass { event_id: String },
-    /// The user chose to paste the original: re-report the event as not redacted.
+    /// The redacted text of a `redactText` event was pasted: report it now (one report per
+    /// paste). Nothing is reported at `redactText` time, when the user may never paste.
     #[serde(rename_all = "camelCase")]
-    ReportOverride { event_id: String },
+    ReportPaste { event_id: String },
+    /// The user chose to paste the original: re-report that paste as not redacted.
+    #[serde(rename_all = "camelCase")]
+    ReportOverride { paste_id: String },
     /// What the ES extension watches: the protected apps' executables and the scanned extensions.
     EsConfig,
     /// Keep this connection open for pushed [`Event`]s.
@@ -163,6 +167,12 @@ pub struct RedactTextResult {
     pub types: Vec<TypeCount>,
     pub event_id: Option<String>,
     pub allow_bypass: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportPasteResult {
+    pub paste_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
