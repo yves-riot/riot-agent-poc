@@ -14,9 +14,10 @@ RiotES.systemextension        ── Endpoint Security AUTH_OPEN on the protecte
 ```
 
 **Detection is the extension's own code.** `js/` bundles `@tryriot/sonar-detection` (and the
-token memory of `@tryriot/sonar-guard-core`) from the shared-packages branch; `core/riot-detect`
-runs it on an embedded QuickJS. What the browser provided natively is provided by Rust: UTF-8
-decoding and pdf text extraction (`pdf-extract` + `lopdf`, standing in for pdf.js).
+token memory of `@tryriot/sonar-guard-core`) from the extension's `feat/shared-sonar-packages`
+branch; `core/riot-detect` runs it on an embedded QuickJS. What the browser provided natively
+is provided by Rust: UTF-8 decoding and pdf text extraction (`pdf-extract` + `lopdf`, standing
+in for pdf.js).
 
 ## Layout
 
@@ -36,10 +37,12 @@ decoding and pdf text extraction (`pdf-extract` + `lopdf`, standing in for pdf.j
 ## Run it locally
 
 Needs Rust, Node + pnpm, Xcode (for the SwiftUI macros), and a checkout of
-`riot-browser-extension` with the shared packages (`SONAR_PACKAGES_DIR`, default
-`~/dev/riot/riot-browser-extension-pkgs/packages`).
+`tryriot/riot-browser-extension` on branch `feat/shared-sonar-packages` (`SONAR_PACKAGES_DIR`,
+default `~/dev/riot/riot-browser-extension-pkgs/packages`):
 
 ```sh
+git clone -b feat/shared-sonar-packages git@github.com:tryriot/riot-browser-extension.git \
+  ~/dev/riot/riot-browser-extension-pkgs
 (cd js && pnpm install && node build.mjs)
 dev/run-dev.sh                                   # stub parrot + daemon, unprivileged
 apple/build-app.sh                               # → apple/build/Riot.app (ad-hoc signed)
@@ -68,9 +71,10 @@ cd apple/RiotAgent && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer s
 - **Latency:** paste 1 KB 20 ms, 10 KB 160 ms, 64 KB 330 ms; a 1 MiB text file 3.3 s.
   Redaction runs on the switch to the AI app, before the paste, so it is not in the user's way.
   The floor on small pastes is `compromise` (about 130 ms per 10k-char chunk).
-- **QuickJS patch:** one source patch is applied at bundle time (`js/build.mjs`, `PATCHES`): the phone
-  detector sliced the whole remaining text per match. That is O(1) on V8 but a copy on QuickJS.
-  It took a 1 MiB scan from 12.3 s to 3.3 s. It is behaviour-preserving and should be upstreamed.
+- **QuickJS and slicing:** the phone detector used to slice the whole remaining text per match,
+  O(1) on V8 but a copy on QuickJS: a 1 MiB scan took 12.3 s. Its currency check is now a sticky
+  regex tested at the match end, upstream in `sonar-detection`: 3.3 s, the engine bundled
+  unpatched. Any `text.slice(i)` in a per-match loop has the same cost here.
 - **Clipboard:** verified on macOS 27.2 against TextEdit: swap on activation, restore on leave,
   detokenize of copied answers, HUD. No pasteboard-privacy alert was raised on this Mac.
   Since then, the redacted text is a promised pasteboard item: the HUD and the report wait for

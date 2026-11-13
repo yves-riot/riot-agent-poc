@@ -45,34 +45,6 @@ const sonarSources = {
   },
 };
 
-// Source patches for QuickJS, applied at bundle time. Each must match exactly once (the build
-// fails otherwise, so an upstream change is noticed) and each is meant to be upstreamed: they are
-// behaviour-preserving on V8 and only remove costs QuickJS does not optimise away.
-const PATCHES = [
-  {
-    file: join(detectionDir, 'src/detectors/phone.ts'),
-    find: 'CURRENCY_SUFFIX.test(text.slice(endsAt))',
-    replace: 'CURRENCY_SUFFIX.test(text.slice(endsAt, endsAt + 64))',
-    why:
-      'V8 slices in O(1); QuickJS copies, so slicing the whole tail per phone match is O(n^2). ' +
-      'The suffix regex is anchored and only reads whitespace + a currency token.',
-  },
-];
-
-const sourcePatches = {
-  name: 'source-patches',
-  setup(b) {
-    for (const patch of PATCHES) {
-      b.onLoad({ filter: new RegExp(patch.file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$') }, () => {
-        const source = readFileSync(patch.file, 'utf8');
-        const count = source.split(patch.find).length - 1;
-        if (count !== 1) throw new Error(`patch for ${patch.file} matched ${count} times: ${patch.find}`);
-        return { contents: source.replace(patch.find, patch.replace), loader: 'ts' };
-      });
-    }
-  },
-};
-
 const conformanceCases = {
   name: 'conformance-cases',
   setup(b) {
@@ -101,7 +73,7 @@ const common = {
   conditions: ['riot-source'],
   legalComments: 'none',
   logLevel: 'warning',
-  plugins: [sonarSources, sourcePatches, conformanceCases],
+  plugins: [sonarSources, conformanceCases],
 };
 
 // Rewrites only what changed: `riot-detect` embeds dist/detection.js (`include_str!`), and
