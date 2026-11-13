@@ -74,6 +74,16 @@ private final class FakePasteboard: PasteboardAccess {
 
 private final class FakeKeyboard: KeyboardState {
     var commandHeld = false
+    var secondsSinceKeyDown: TimeInterval = 1000
+}
+
+private final class FakeKeystrokes: KeystrokeSender {
+    var allowed = true
+    var sent = 0
+    func undoThenPaste() -> Bool {
+        if allowed { sent += 1 }
+        return allowed
+    }
 }
 
 /// Stands in for the daemon: redacts one IBAN, remembers the tokens for detokenization.
@@ -114,6 +124,7 @@ final class ClipboardGuardTests: XCTestCase {
     private var pb: FakePasteboard!
     private var backend: FakeBackend!
     private var keyboard: FakeKeyboard!
+    private var keys: FakeKeystrokes!
     private var clock = Date(timeIntervalSince1970: 1_000_000)
     private var guardian: ClipboardGuard!
     private var pastedEvents = 0
@@ -122,12 +133,13 @@ final class ClipboardGuardTests: XCTestCase {
         pb = FakePasteboard()
         backend = FakeBackend()
         keyboard = FakeKeyboard()
+        keys = FakeKeystrokes()
         pastedEvents = 0
         guardian = makeGuard(rearmDelay: 0)
     }
 
     private func makeGuard(rearmDelay: TimeInterval) -> ClipboardGuard {
-        let guardian = ClipboardGuard(pasteboard: pb, backend: backend, keyboard: keyboard,
+        let guardian = ClipboardGuard(pasteboard: pb, backend: backend, keyboard: keyboard, keys: keys,
                                       now: { [unowned self] in self.clock }, rearmDelay: rearmDelay)
         guardian.targets = [chatgpt, claude]
         guardian.onPasted = { [weak self] _, _ in self?.pastedEvents += 1 }
@@ -324,13 +336,42 @@ final class ClipboardGuardTests: XCTestCase {
     func testPasteOriginalPutsItBackAndOverridesTheLastPaste() async {
         await copyIBANAndActivate()
         _ = await paste()
-        guardian.pasteOriginal()
+        clock.addTimeInterval(5) // reading the HUD, clicking through the confirmation
+        XCTAssertEqual(guardian.pasteOriginal(), .pasted)
+        XCTAssertEqual(keys.sent, 1, "⌘Z then ⌘V over the redacted paste")
         XCTAssertEqual(text(), "Mon IBAN \(FakeBackend.iban)")
         guardian.tick()
         await guardian.waitIdle()
         XCTAssertEqual(backend.redactCalls, 1, "the original the user chose is not re-redacted")
         try? await Task.sleep(nanoseconds: 50_000_000)
         XCTAssertEqual(backend.overrides, ["paste-1"])
+    }
+
+    func testPasteOriginalLeavesItOnTheClipboardIfTheUserTypedSinceThePaste() async {
+        await copyIBANAndActivate()
+        _ = await paste()
+        clock.addTimeInterval(5)
+        keyboard.secondsSinceKeyDown = 2 // a key 3 s after the paste: ⌘Z would undo that
+        XCTAssertEqual(guardian.pasteOriginal(), .onClipboard)
+        XCTAssertEqual(keys.sent, 0)
+        XCTAssertEqual(text(), "Mon IBAN \(FakeBackend.iban)")
+    }
+
+    func testPasteOriginalWithoutAccessibilityLeavesItOnTheClipboard() async {
+        keys.allowed = false
+        await copyIBANAndActivate()
+        _ = await paste()
+        keyboard.secondsSinceKeyDown = 0.5 // the ⌘V itself, seen late
+        XCTAssertEqual(guardian.pasteOriginal(), .onClipboard)
+        XCTAssertEqual(text(), "Mon IBAN \(FakeBackend.iban)")
+    }
+
+    func testPasteOriginalSendsNoKeysToAnotherApp() async {
+        await copyIBANAndActivate()
+        _ = await paste()
+        guardian.activated(bundleId: "com.apple.Notes") // the leave step has not run yet
+        XCTAssertEqual(guardian.pasteOriginal(), .onClipboard)
+        XCTAssertEqual(keys.sent, 0, "⌘Z in Notes would undo something else")
     }
 
     func testTheReArmWaitsUntilTheReadingAppHasItsData() async {

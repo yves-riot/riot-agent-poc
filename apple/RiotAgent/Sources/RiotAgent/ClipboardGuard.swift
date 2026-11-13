@@ -27,6 +27,15 @@ protocol PasteboardAccess: AnyObject {
 /// Whether ⌘ is down right now (the window server's state: no permission involved).
 protocol KeyboardState: AnyObject {
     var commandHeld: Bool { get }
+    /// Time since the last key press, anywhere. Coarse without Input Monitoring (0.5 s steps),
+    /// enough to tell whether the user typed in the seconds after a paste.
+    var secondsSinceKeyDown: TimeInterval { get }
+}
+
+/// Keystrokes into the frontmost app (needs the Accessibility permission).
+protocol KeystrokeSender: AnyObject {
+    /// Sends ⌘Z then ⌘V. False, with nothing sent, without the permission.
+    func undoThenPaste() -> Bool
 }
 
 /// What the guard asks the daemon.
@@ -73,6 +82,17 @@ final class ClipboardGuard {
         var silentRearms = 1
         /// The report of the last paste, for "paste the original".
         var lastPaste: Task<String?, Never>?
+        var lastPasteAt: Date?
+    }
+
+    /// What "paste the original" could do.
+    enum OriginalOutcome {
+        /// Nothing to put back (the clipboard changed, or bypass is not allowed).
+        case unavailable
+        /// The original is on the clipboard: the user undoes and pastes again.
+        case onClipboard
+        /// The redacted paste was undone and the original pasted in its place.
+        case pasted
     }
 
     /// Our own writes carry this type, so the next tick recognises them (Maccy's `.fromMaccy`).
@@ -87,6 +107,9 @@ final class ClipboardGuard {
         pattern: #"\\?\[([A-Z][A-Z0-9]*(?:\\?_[A-Z][A-Z0-9]*)*\\?_\d+)\\?\]"#)
     /// Readers this soon after our write are reacting to the write, not pasting.
     static let earlyRead: TimeInterval = 0.15
+    /// A key press later than this after the paste means the user typed: ⌘Z would undo their
+    /// typing, not the paste. (Covers the ⌘V itself, seen late by the coarse counter.)
+    static let typedAfterPaste: TimeInterval = 1
     /// The text representations restored on a copy out of the app; others are dropped, they
     /// could still hold the tokens.
     static let textTypes = [NSPasteboard.PasteboardType.string.rawValue, "public.html", "public.rtf"]
@@ -94,6 +117,7 @@ final class ClipboardGuard {
     private let pasteboard: PasteboardAccess
     private let backend: GuardBackend
     private let keyboard: KeyboardState
+    private let keys: KeystrokeSender
     private let now: () -> Date
     var targets: Set<String> = []
     /// A paste of redacted text into a protected app: show the HUD.
@@ -113,11 +137,12 @@ final class ClipboardGuard {
     private var pendingRearm: Task<Void, Never>?
 
     init(pasteboard: PasteboardAccess, backend: GuardBackend,
-         keyboard: KeyboardState = SystemKeyboardState(), now: @escaping () -> Date = Date.init,
-         rearmDelay: TimeInterval = 0.5) {
+         keyboard: KeyboardState = SystemKeyboardState(), keys: KeystrokeSender = SystemKeystrokes(),
+         now: @escaping () -> Date = Date.init, rearmDelay: TimeInterval = 0.5) {
         self.pasteboard = pasteboard
         self.backend = backend
         self.keyboard = keyboard
+        self.keys = keys
         self.now = now
         self.rearmDelay = rearmDelay
         self.lastSeen = pasteboard.changeCount
@@ -252,6 +277,7 @@ final class ClipboardGuard {
                 swap.lastPaste = Task { try? await backend.reportPaste(eventId: eventId) }
             }
             swap.pasted = true
+            swap.lastPasteAt = readAt
             swap.silentRearms = 1
             self.swap = swap
             onPasted?(swap.result, swap.bundleId)
@@ -314,9 +340,12 @@ final class ClipboardGuard {
     }
 
     /// "Paste without redaction", after the user confirmed: the original goes back on the
-    /// clipboard for this app, and the last paste is re-reported as not redacted.
-    func pasteOriginal() {
-        guard let swap, swap.result.allowBypass, pasteboard.changeCount == swap.changeCount else { return }
+    /// clipboard for this app, and the last paste is re-reported as not redacted. Then, if the
+    /// app is still frontmost (the HUD does not take focus) and the user has not typed since
+    /// the paste, ⌘Z undoes the redacted paste and ⌘V pastes the original.
+    @discardableResult
+    func pasteOriginal() -> OriginalOutcome {
+        guard let swap, swap.result.allowBypass, pasteboard.changeCount == swap.changeCount else { return .unavailable }
         self.swap = nil
         pendingRearm?.cancel()
         pasteboard.restore(swap.original, marker: Self.marker) // marked: not re-inspected
@@ -328,6 +357,19 @@ final class ClipboardGuard {
                 try? await backend.reportOverride(pasteId: pasteId)
             }
         }
+        guard frontmost == swap.bundleId, let pastedAt = swap.lastPasteAt else { return .onClipboard }
+        let sincePaste = now().timeIntervalSince(pastedAt)
+        let sinceKey = keyboard.secondsSinceKeyDown
+        guard sincePaste - sinceKey < Self.typedAfterPaste else {
+            log.debug("original on the clipboard: typed \(Int(sincePaste - sinceKey))s after the paste")
+            return .onClipboard
+        }
+        guard keys.undoThenPaste() else {
+            log.debug("original on the clipboard: no Accessibility permission")
+            return .onClipboard
+        }
+        log.debug("original pasted over the redacted paste")
+        return .pasted
     }
 
     // MARK: tokens
@@ -485,4 +527,7 @@ private final class PromiseProvider: NSObject, NSPasteboardItemDataProvider {
 /// use here: without Input Monitoring they move in 0.5 s steps and late.)
 final class SystemKeyboardState: KeyboardState {
     var commandHeld: Bool { CGEventSource.flagsState(.combinedSessionState).contains(.maskCommand) }
+    var secondsSinceKeyDown: TimeInterval {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: .keyDown)
+    }
 }

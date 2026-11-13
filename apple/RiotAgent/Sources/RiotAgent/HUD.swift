@@ -9,6 +9,7 @@ final class HUDController: ObservableObject {
     enum Card: Equatable {
         case text(result: RedactTextResultBox, app: String)
         case textConfirm(result: RedactTextResultBox, app: String)
+        /// After "paste without redaction", when the original could only go on the clipboard.
         case steppedAside
         case file(FileBlocked)
         case fileConfirm(FileBlocked)
@@ -92,8 +93,12 @@ final class HUDController: ObservableObject {
     // MARK: actions
 
     func pasteOriginal() {
-        model?.clipboard.pasteOriginal()
-        show(.steppedAside, autoDismiss: 8)
+        // Pasted in place: the field shows it, nothing to add.
+        if model?.clipboard.pasteOriginal() == .pasted {
+            dismiss()
+        } else {
+            show(.steppedAside, autoDismiss: 8)
+        }
     }
 
     func sendFileAnyway(_ blocked: FileBlocked) {
@@ -179,8 +184,8 @@ private struct HUDView: View {
                     .keyboardShortcut(.defaultAction)
             }
         case .steppedAside:
-            // Unlike the extension, the agent cannot rewrite the field without Accessibility:
-            // the original is on the clipboard, the user swaps it in themselves.
+            // Without Accessibility (or after the user typed), the original is only on the
+            // clipboard: the user swaps it in themselves.
             header(l.t("redactionGuard.steppedAside.title"), l.t("agent.text.pasteOriginalHint"))
             HStack { Spacer(); Button(l.t("redactionGuard.steppedAside.close")) { controller.dismiss() } }
         case let .file(blocked):
