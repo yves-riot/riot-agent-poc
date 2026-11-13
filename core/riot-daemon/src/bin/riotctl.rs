@@ -1,13 +1,15 @@
 //! Talk to a running daemon from a terminal.
 //!
 //! ```text
-//! riotctl status | popup | refresh | watch
+//! riotctl status | popup | refresh | watch | es-config
 //! riotctl redact <bundle-id> <text>
 //! riotctl detok <bundle-id> <text>
 //! riotctl scan <bundle-id> <path>          (root, or daemon started with RIOT_DEV_ALLOW_SCAN=1)
 //! riotctl paste <event-id>                (report a paste of a redactText event)
 //! riotctl bypass <event-id> | override <paste-id>
 //! ```
+//!
+//! Every command and its output: docs/riotctl.md.
 
 use std::path::PathBuf;
 
@@ -57,6 +59,6 @@ fn main() {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: riotctl status|popup|refresh|watch|redact <bundle> <text>|detok <bundle> <text>|scan <bundle> <path>|paste <event>|bypass <event>|override <paste>");
+    eprintln!("usage: riotctl status|popup|refresh|watch|es-config|redact <bundle> <text>|detok <bundle> <text>|scan <bundle> <path>|paste <event>|bypass <event>|override <paste>");
     std::process::exit(2)
 }

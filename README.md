@@ -48,7 +48,7 @@ RIOT_SOCKET=$TMPDIR/riot-dev.sock apple/build/Riot.app/Contents/MacOS/RiotAgent
 
 `RIOT_SOCKET=$TMPDIR/riot-dev.sock core/target/release/riotctl status|popup|watch|…`
 talks to the daemon directly; `scan` works unprivileged because `run-dev.sh` sets
-`RIOT_DEV_ALLOW_SCAN=1`.
+`RIOT_DEV_ALLOW_SCAN=1`. Every command: [docs/riotctl.md](docs/riotctl.md).
 
 ## Tests
 
