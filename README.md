@@ -19,6 +19,8 @@ branch; `core/riot-detect` runs it on an embedded QuickJS. What the browser prov
 is provided by Rust: UTF-8 decoding and pdf text extraction (`pdf-extract` + `lopdf`, standing
 in for pdf.js).
 
+Why Rust, QuickJS and native apps: [docs/stack-choices.md](docs/stack-choices.md).
+
 ## Layout
 
 | Path                                 | What                                                                                                                                    |
