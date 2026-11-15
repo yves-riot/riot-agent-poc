@@ -322,7 +322,10 @@ impl Agent {
             return allow("bypass");
         }
         let _guard = self.scan_lock.lock().await;
-        if let Some((cached, _)) = self.state.read().unwrap().scan_cache.get(&identity).cloned() {
+        // Its own statement: an `if let` would hold this read guard through the block, and
+        // `notify_blocked` takes the write lock (a deadlock on every cached deny).
+        let cached = self.state.read().unwrap().scan_cache.get(&identity).cloned();
+        if let Some((cached, _)) = cached {
             if cached.decision == "deny" {
                 self.notify_blocked(&identity, &path, &bundle_id, &target, &cached);
             }
@@ -605,5 +608,31 @@ mod tests {
         assert!(!overridden.1.text.as_ref().unwrap().redacted);
         assert!(agent.report_override(&event).is_err(), "overrides name a paste, not the redaction");
         assert!(agent.report_paste("nope").is_err());
+    }
+
+    /// A blocked file opened again once the notice debounce is over is answered from the cache,
+    /// and notified again: that must not wait on the state lock the cache lookup holds.
+    #[test]
+    fn a_blocked_file_opened_again_is_denied_from_the_cache() {
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let decisions = runtime.block_on(async {
+                let agent = agent("rescan");
+                let path = agent.paths.data_dir.join("sensible.txt");
+                std::fs::write(&path, format!("Mon IBAN {IBAN}")).unwrap();
+                let path = path.to_string_lossy().into_owned();
+                let first = agent.scan_file(path.clone(), APP.into(), None).await;
+                agent.last_block_notice.lock().unwrap().clear(); // as if the debounce were over
+                let again = agent.scan_file(path, APP.into(), None).await;
+                let blocked = agent.popup_state().recent_events.iter().filter(|e| e.kind == "fileBlocked").count();
+                (first.decision, again.decision, blocked)
+            });
+            let _ = done.send(decisions);
+        });
+        let (first, again, blocked) =
+            finished.recv_timeout(Duration::from_secs(20)).expect("the second scan never returned: deadlock");
+        assert_eq!((first.as_str(), again.as_str()), ("deny", "deny"));
+        assert_eq!(blocked, 2, "each notice past the debounce is a recent event");
     }
 }

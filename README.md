@@ -10,7 +10,7 @@ Riot.app (menu bar, SwiftUI)  ── clipboard guard + HUD + popup
       │  Unix socket, line-delimited JSON (core/riot-ipc)
 riot-daemon (Rust, root)      ── detection engine, policy, parrot sync, report outbox
       ▲  same socket (scanFile with deadline)
-RiotES.systemextension        ── Endpoint Security AUTH_OPEN on the protected apps only
+RiotES.systemextension        ── Endpoint Security AUTH_OPEN on the protected apps' processes
 ```
 
 **Detection is the extension's own code.** `js/` bundles `@tryriot/sonar-detection` (and the
@@ -107,6 +107,18 @@ cd apple/RiotAgent && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer s
   the values back for a drag out of a protected app. HUD and report on release over the
   protected app. The text of every text drag is read when it starts (detection runs only for a
   protected app). Files and images are left to RiotES. Verified with Claude and ChatGPT.
+- **File blocking** (`RiotES`, Endpoint Security): verified in a macOS 26 VM against Claude
+  Desktop. A protected app is recognised by its signing team id (the policy's `team_id`), or by
+  its executable's folder for apps without one; its descendants are protected too. That covers
+  Claude Code, which Claude Desktop runs from `~/Library/Application Support/Claude/claude-code/`
+  and which reads attached files itself in Code mode, and the commands it runs (`cat` included),
+  and Claude Code started from a terminal (same signature). Exec is an AUTH event, answered from
+  memory and never cached, so a child is protected before it opens anything (no measurable cost
+  on 500 execs). Opens are answered with every flag allowed (`UInt32.max`): echoing the request's
+  flags let only an app's first open of a file through. Documents with detections, and documents
+  that cannot be read, are denied; the app shows a read error and Riot the "file blocked" card.
+  Not covered: a forked child that opens a file before its fork notification is handled (no
+  exec), and work handed to a system service (the file picker only displays the file).
 - **Copy out of the AI app:** plain text, HTML and RTF get the real values back, each with its
   escaping (markdown-escaped tokens such as `\[IBAN\_1\]` included); other representations of
   the copy are dropped.
@@ -119,11 +131,11 @@ cd apple/RiotAgent && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer s
 
 ## Not done / open
 
-- **ES extension:** compiles and links, but is not run. It needs Apple's
-  `com.apple.developer.endpoint-security.client` entitlement (request it now; it takes weeks).
-  Until then, test in a VM with SIP off and `systemextensionsctl developer on`. Still to check:
-  which ChatGPT/Claude processes open uploaded files (picker, drag, paste), and the AUTH_OPEN
-  deadline against large scans.
+- **ES extension in production:** verified only as a root binary in a VM with SIP off
+  ([docs/es-vm.md](docs/es-vm.md)). Shipping it needs Apple's
+  `com.apple.developer.endpoint-security.client` entitlement (request it now; it takes weeks), then
+  the system extension path (activation, MDM approval, Full Disk Access) to be run once. Still to
+  check: the AUTH_OPEN deadline against large scans (3.3 s per MiB of text today), and ChatGPT.
 - **Parrot endpoints:** specified in `docs/parrot-agent-api.md`, implemented only by the stub.
 - **Production hardening:**
   - device token in the System keychain (now a 0600 file);

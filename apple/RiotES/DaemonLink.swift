@@ -55,11 +55,13 @@ final class DaemonLink: @unchecked Sendable {
         guard let client = current else { return }
         Task {
             guard let config: EsConfigWire = try? await client.call("esConfig") else { return }
+            var teams: [String: String] = [:]
             var prefixes: [String: String] = [:]
             for app in config.watched {
+                if let team = app.teamId, !team.isEmpty { teams[team] = app.bundleId }
                 for prefix in app.executablePrefixes { prefixes[prefix] = app.bundleId }
             }
-            onConfig?(ESConfigSnapshot(prefixes: prefixes, extensions: Set(config.extensions)))
+            onConfig?(ESConfigSnapshot(teams: teams, prefixes: prefixes, extensions: Set(config.extensions)))
         }
     }
 
