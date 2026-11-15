@@ -129,6 +129,77 @@ cd apple/RiotAgent && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer s
   After the first paste, a paste from the Edit or context menu (no ⌘) is redacted but shows no
   HUD. A second ⌘V within 0.5 s of the first gets the cached text without a HUD of its own.
 
+## How a file open is decided
+
+From a protected app's `open()` to the kernel's answer. The JS engine never sees the path, only
+the file's name and bytes; every policy decision (target, bypass, cache, fail open or closed) is
+taken in the daemon.
+
+```
+ AI app (e.g. ChatGPT)        kernel
+        │ open("report.pdf")    │
+        └──────────────────────►│ ES_EVENT_TYPE_AUTH_OPEN (with a deadline)
+                                ▼
+┌─ RiotES (root, Swift) ──────────────────────────────────────────────────────────┐
+│ ESGuard.handleOpen                                                              │
+│   protected app? candidate extension? ── no ──► allow (cached by the kernel)    │
+│   budget = ES deadline − margin ;  es_retain_message                            │
+│   queue.async ─► DaemonLink.scanFile(path, bundleId, timeout: budget)           │
+│                    Task { client.call("scanFile") }  +  semaphore.wait(budget)  │
+└────────────────────────────────┬────────────────────────────────────────────────┘
+                                 │ {"id":42,"method":"scanFile",
+                                 │  "params":{"path","bundleId","deadlineMs"}}\n
+                                 ▼  Unix socket agent.sock (line-delimited JSON)
+┌─ riot-daemon (Rust, tokio) ─────────────────────────────────────────────────────┐
+│ server.rs   connection() ─► tokio::spawn(handle)   uid ≠ 0 ? ──► "forbidden"    │
+│ agent.rs    scan_file()                                                         │
+│               target? ─ bypass? ─ cache? ── hit ──► cached result               │
+│               deadline = now + deadlineMs                                       │
+│               spawn_blocking ─► engine.scan_path(path, options, deadline)       │
+└────────────────────────────────┬────────────────────────────────────────────────┘
+                                 │ Job over an mpsc channel, blocks on the reply
+                                 ▼
+┌─ riot-detect: the single "riot-detect-js" thread (QuickJS) ─────────────────────┐
+│ scan_path: supportedFileFormat(name)? ─ size ≤ 25 MB? ─ std::fs::read           │
+│ scan_bytes ─► call_json("scanFile", deadline,                                   │
+│                         [name, mime "", Uint8Array, optionsJson])               │
+│   with_deadline: AtomicU64 ◄── read by the interrupt handler (aborts the JS)    │
+│   host_fn: globalThis.Sonar.host.scanFile(...)                                  │
+│                │                                     ▲                          │
+│                ▼                                     │ settle(): promise.finish │
+│  ┌─ JS (js/dist/detection.js) ───────────────────┐   │                          │
+│  │ host.ts scanFile                              │   │                          │
+│  │   engine.scanFile(fileLike(name, mime, bytes))│───┘ JSON string              │
+│  │   @tryriot/sonar-detection                    │                              │
+│  │     pdf ─► __riot.pdfText ─► pdf.rs (native)  │                              │
+│  └───────────────────────────────────────────────┘                              │
+│ serde_json ─► FileScan { Scanned | Unsupported | Oversized | Error }            │
+└────────────────────────────────┬────────────────────────────────────────────────┘
+                                 ▼
+┌─ riot-daemon: the decision ─────────────────────────────────────────────────────┐
+│   Scanned with detections ─► deny "detections"  (+ report, + notification)      │
+│   Scanned clean / Unsupported ─► allow                                          │
+│   Oversized / Error ─► deny "error"             (fail closed)                   │
+│   Timeout ─► allow "timeout"                    (fail open, not cached)         │
+│   ─► cache ─► {"id":42,"ok":{"decision","reason","types","eventId"}}\n          │
+└────────────────────────────────┬────────────────────────────────────────────────┘
+                                 ▼
+┌─ RiotES ────────────────────────────────────────────────────────────────────────┐
+│ semaphore.signal ─► Verdict (.allow on timeout, error or no daemon)             │
+│ es_respond_flags_result(deny ? 0 : UInt32.max, cache: false)                    │
+│ es_release_message                                                              │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+One time budget runs through every layer:
+
+```
+ES deadline ─► budget (Swift: semaphore + call timeout)
+            ─► deadlineMs (IPC)
+            ─► Instant (daemon)
+            ─► AtomicU64 read by QuickJS's interrupt handler
+```
+
 ## Not done / open
 
 - **ES extension in production:** verified only as a root binary in a VM with SIP off
