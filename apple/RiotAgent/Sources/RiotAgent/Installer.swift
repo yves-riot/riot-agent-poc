@@ -1,4 +1,5 @@
 import Foundation
+import NetworkExtension
 import ServiceManagement
 import SystemExtensions
 
@@ -6,12 +7,16 @@ import SystemExtensions
 /// pre-approved by the MDM profile, so the user sees no prompt:
 ///   * daemon + per-user agent: SMAppService, approved by `com.apple.servicemanagement`
 ///     (Managed Login Items, rule on the team id);
-///   * ES extension: OSSystemExtensionRequest, approved by `com.apple.system-extension-policy`,
-///     with Full Disk Access from `com.apple.TCC.configuration-profile-policy`.
+///   * system extensions: OSSystemExtensionRequest, approved by
+///     `com.apple.system-extension-policy`. The ES extension gets Full Disk Access from
+///     `com.apple.TCC.configuration-profile-policy`; the network extension gets its transparent
+///     proxy configuration from `com.apple.vpn.managed`.
 /// Development runs (outside /Applications) skip all of it.
 @MainActor
 final class Installer: NSObject, OSSystemExtensionRequestDelegate {
-    static let extensionIdentifier = "com.tryriot.agent.es"
+    /// Whichever of these the app bundles is activated.
+    nonisolated static let esExtension = "com.tryriot.agent.es"
+    nonisolated static let netExtension = "com.tryriot.agent.net"
 
     static var isInstalledCopy: Bool { Bundle.main.bundlePath.hasPrefix("/Applications/") }
 
@@ -19,12 +24,49 @@ final class Installer: NSObject, OSSystemExtensionRequestDelegate {
         guard Self.isInstalledCopy else { return }
         register(SMAppService.daemon(plistName: "com.tryriot.agent.daemon.plist"), "daemon")
         register(SMAppService.agent(plistName: "com.tryriot.agent.plist"), "agent")
-        let sysext = Bundle.main.bundleURL.appendingPathComponent("Contents/Library/SystemExtensions")
-        if FileManager.default.fileExists(atPath: sysext.path) {
-            let request = OSSystemExtensionRequest.activationRequest(
-                forExtensionWithIdentifier: Self.extensionIdentifier, queue: .main)
+        let bundled = Bundle.main.bundleURL.appendingPathComponent("Contents/Library/SystemExtensions")
+        for identifier in [Self.esExtension, Self.netExtension] {
+            guard FileManager.default.fileExists(atPath: bundled.appendingPathComponent("\(identifier).systemextension").path) else { continue }
+            let request = OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: identifier, queue: .main)
             request.delegate = self
             OSSystemExtensionManager.shared.submitRequest(request)
+        }
+    }
+
+    /// Turns the network extension's proxy on. The MDM profile normally provides the
+    /// configuration (the user then sees no "Allow" prompt); without one, the app creates it.
+    private func startProxy() {
+        NETransparentProxyManager.loadAllFromPreferences { managers, error in
+            if let error {
+                NSLog("riot: cannot read the proxy configurations: %@", String(describing: error))
+                return
+            }
+            let ours = managers?.first {
+                ($0.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == Self.netExtension
+            }
+            let manager = ours ?? NETransparentProxyManager()
+            if ours == nil {
+                let configuration = NETunnelProviderProtocol()
+                configuration.providerBundleIdentifier = Self.netExtension
+                configuration.serverAddress = "127.0.0.1" // required; the proxy is the local daemon
+                manager.protocolConfiguration = configuration
+                manager.localizedDescription = "Riot"
+            }
+            manager.isEnabled = true
+            manager.saveToPreferences { error in
+                if let error {
+                    NSLog("riot: cannot save the proxy configuration: %@", String(describing: error))
+                    return
+                }
+                // A saved configuration must be loaded again before it can be started.
+                manager.loadFromPreferences { _ in
+                    do {
+                        try manager.connection.startVPNTunnel()
+                    } catch {
+                        NSLog("riot: cannot start the proxy: %@", String(describing: error))
+                    }
+                }
+            }
         }
     }
 
@@ -47,15 +89,18 @@ final class Installer: NSObject, OSSystemExtensionRequestDelegate {
     }
 
     nonisolated func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
-        NSLog("riot: ES extension awaits approval: the system-extension-policy payload is missing")
+        NSLog("riot: %@ awaits approval: the system-extension-policy payload is missing", request.identifier)
     }
 
     nonisolated func request(_ request: OSSystemExtensionRequest,
                              didFinishWithResult result: OSSystemExtensionRequest.Result) {
-        NSLog("riot: ES extension activation result %d", result.rawValue)
+        NSLog("riot: %@ activation result %d", request.identifier, result.rawValue)
+        if request.identifier == Self.netExtension, result == .completed {
+            Task { @MainActor in self.startProxy() }
+        }
     }
 
     nonisolated func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
-        NSLog("riot: ES extension activation failed: %@", String(describing: error))
+        NSLog("riot: %@ activation failed: %@", request.identifier, String(describing: error))
     }
 }

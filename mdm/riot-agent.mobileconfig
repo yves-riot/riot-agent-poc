@@ -23,7 +23,8 @@
   <key>PayloadContent</key>
   <array>
 
-    <!-- 1. Endpoint Security system extension: allowed, and not removable by the user. -->
+    <!-- 1. System extensions (Endpoint Security, network): allowed, and not removable by the
+            user. -->
     <dict>
       <key>PayloadType</key><string>com.apple.system-extension-policy</string>
       <key>PayloadIdentifier</key><string>com.tryriot.agent.profile.sysext</string>
@@ -31,11 +32,32 @@
       <key>PayloadVersion</key><integer>1</integer>
       <key>AllowUserOverrides</key><false/>
       <key>AllowedSystemExtensions</key>
-      <dict><key>__TEAM_ID__</key><array><string>com.tryriot.agent.es</string></array></dict>
+      <dict><key>__TEAM_ID__</key><array><string>com.tryriot.agent.es</string><string>com.tryriot.agent.net</string></array></dict>
       <key>AllowedSystemExtensionTypes</key>
-      <dict><key>__TEAM_ID__</key><array><string>EndpointSecurityExtension</string></array></dict>
+      <dict><key>__TEAM_ID__</key><array><string>EndpointSecurityExtension</string><string>NetworkExtension</string></array></dict>
       <key>NonRemovableSystemExtensions</key>
-      <dict><key>__TEAM_ID__</key><array><string>com.tryriot.agent.es</string></array></dict>
+      <dict><key>__TEAM_ID__</key><array><string>com.tryriot.agent.es</string><string>com.tryriot.agent.net</string></array></dict>
+    </dict>
+
+    <!-- 1b. The network extension's transparent proxy: configured here, so the user is not
+             asked to allow it and cannot switch it off. It relays the protected AI apps' HTTPS
+             to the daemon on this Mac; RemoteAddress is only a label. -->
+    <dict>
+      <key>PayloadType</key><string>com.apple.vpn.managed</string>
+      <key>PayloadIdentifier</key><string>com.tryriot.agent.profile.proxy</string>
+      <key>PayloadUUID</key><string>9C4D6E5F-1A2B-4C3D-9E4F-5A6B7C8D9EA5</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>UserDefinedName</key><string>Riot</string>
+      <key>VPNType</key><string>TransparentProxy</string>
+      <key>TransparentProxy</key>
+      <dict>
+        <key>ProviderType</key><string>app-proxy</string>
+        <key>ProviderBundleIdentifier</key><string>com.tryriot.agent.net</string>
+        <key>ProviderDesignatedRequirement</key>
+        <string>identifier "com.tryriot.agent.net" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "__TEAM_ID__"</string>
+        <key>RemoteAddress</key><string>127.0.0.1</string>
+        <key>AuthenticationMethod</key><string>Password</string>
+      </dict>
     </dict>
 
     <!-- 2. Privacy (PPPC): Full Disk Access for the ES extension (required for any ES client)

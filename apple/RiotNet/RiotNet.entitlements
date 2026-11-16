@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Available to any Developer ID team through a provisioning profile with the Network
+       Extensions capability: no request to Apple, unlike Endpoint Security. -->
+  <key>com.apple.developer.networking.networkextension</key>
+  <array><string>app-proxy-provider-systemextension</string></array>
+  <key>com.apple.security.application-groups</key>
+  <array><string>__TEAM_ID__.com.tryriot.agent</string></array>
+</dict>
+</plist>

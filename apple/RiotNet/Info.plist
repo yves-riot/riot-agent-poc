@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- __TEAM_ID__ is replaced by build-app.sh: the Mach service name must start with one of the
+     extension's app groups. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.tryriot.agent.net</string>
+  <key>CFBundleName</key><string>RiotNet</string>
+  <key>CFBundleExecutable</key><string>com.tryriot.agent.net</string>
+  <key>CFBundlePackageType</key><string>SYSX</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>NSSystemExtensionUsageDescription</key>
+  <string>Riot checks what AI apps send for sensitive data.</string>
+  <key>NetworkExtension</key>
+  <dict>
+    <key>NEMachServiceName</key><string>__TEAM_ID__.com.tryriot.agent.net</string>
+    <key>NEProviderClasses</key>
+    <dict>
+      <key>com.apple.networkextension.app-proxy</key><string>RiotTransparentProxy</string>
+    </dict>
+  </dict>
+</dict>
+</plist>
