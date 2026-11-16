@@ -61,6 +61,10 @@ protocol GuardBackend: AnyObject {
 /// * The promise is re-armed after each read, so every paste is seen. A re-armed promise
 ///   counts a read as a paste only while ⌘ is held (⌘V): a clipboard manager reading each
 ///   new promise must not loop the HUD.
+/// * An early read of the first promise means an eager reader: a VM sharing its clipboard
+///   reads every write within 100 ms, so the paste is served from the cache and never reaches
+///   us, whatever the gesture. The HUD shows (and the daemon reports) at that read, before the
+///   paste. Not re-armed: the reader would spend it again. Its echo of our text stays ours.
 /// * Leaving the app puts the original back; text copied *out of* the app gets its tokens
 ///   swapped back to the real values, in plain text, HTML and RTF (the native counterpart of
 ///   the extension's restore-dom).
@@ -91,6 +95,9 @@ final class ClipboardGuard {
         case unavailable
         /// The original is on the clipboard: the user undoes and pastes again.
         case onClipboard
+        /// The original is on the clipboard, but no paste of ours was seen (the HUD showed at
+        /// an eager reader's read): the user pastes it, undoing first if they already had.
+        case onClipboardUnseen
         /// The redacted paste was undone and the original pasted in its place.
         case pasted
     }
@@ -199,6 +206,13 @@ final class ClipboardGuard {
         lastSeen = count
         guard isTargetFrontmost else { return false }
         if swap?.changeCount == count || pasteboard.hasType(Self.marker) { return false }
+        if var swap, pasteboard.plainText() == swap.redacted {
+            // A clipboard sync writing our text back: still ours, with the original to restore.
+            log.debug("echo of the redacted text adopted")
+            swap.changeCount = count
+            self.swap = swap
+            return false
+        }
         copiedInside = true
         swap = nil
         return true
@@ -269,13 +283,17 @@ final class ClipboardGuard {
         guard var swap, swap.changeCount == changeCount, frontmost == swap.bundleId,
               pasteboard.changeCount == changeCount else { return }
         let early = readAt.timeIntervalSince(swap.armedAt) < Self.earlyRead
+        if early && !swap.pasted {
+            log.debug("read \(Int(readAt.timeIntervalSince(swap.armedAt) * 1000))ms after arm: eager reader, shown now")
+            report(&swap)
+            self.swap = swap
+            onPasted?(swap.result, swap.bundleId)
+            return
+        }
         let pasted = !early && (!swap.pasted || commandHeld)
         log.debug("read \(Int(readAt.timeIntervalSince(swap.armedAt) * 1000))ms after arm, cmd=\(commandHeld), rearm=\(swap.pasted): \(pasted ? "paste" : "not a paste", privacy: .public)")
         if pasted {
-            if let eventId = swap.result.eventId {
-                let backend = self.backend
-                swap.lastPaste = Task { try? await backend.reportPaste(eventId: eventId) }
-            }
+            report(&swap)
             swap.pasted = true
             swap.lastPasteAt = readAt
             swap.silentRearms = 1
@@ -287,6 +305,12 @@ final class ClipboardGuard {
             self.swap = swap
             scheduleRearm(of: changeCount)
         }
+    }
+
+    private func report(_ swap: inout Swap) {
+        guard let eventId = swap.result.eventId else { return }
+        let backend = self.backend
+        swap.lastPaste = Task { try? await backend.reportPaste(eventId: eventId) }
     }
 
     /// Re-arms once the reading app has its data, if our promise is still the clipboard.
@@ -357,7 +381,8 @@ final class ClipboardGuard {
                 try? await backend.reportOverride(pasteId: pasteId)
             }
         }
-        guard frontmost == swap.bundleId, let pastedAt = swap.lastPasteAt else { return .onClipboard }
+        guard let pastedAt = swap.lastPasteAt else { return .onClipboardUnseen }
+        guard frontmost == swap.bundleId else { return .onClipboard }
         let sincePaste = now().timeIntervalSince(pastedAt)
         let sinceKey = keyboard.secondsSinceKeyDown
         guard sincePaste - sinceKey < Self.typedAfterPaste else {

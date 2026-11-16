@@ -213,23 +213,50 @@ final class ClipboardGuardTests: XCTestCase {
         XCTAssertEqual(pastedEvents, 1)
     }
 
-    func testAnEarlyReadIsSilentAndReArmsOnce() async {
+    func testAnEagerReaderShowsTheHUDAtOnce() async {
+        // A VM sharing its clipboard reads each write 60 to 100 ms later (16/11 logs): the
+        // paste to come will be served from the cache, unseen, whatever the gesture.
         await copyIBANAndActivate(claude)
-        let read = await read(after: 0.05, command: false) // a clipboard manager reacting to our write
+        let read = await read(after: 0.07, command: false)
         XCTAssertEqual(read, "Mon IBAN [IBAN_1]", "still redacted")
-        XCTAssertEqual(pastedEvents, 0)
-        XCTAssertTrue(pb.isPromised, "re-armed once, so the real paste is still seen")
+        XCTAssertEqual(pastedEvents, 1)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(backend.pastes, ["ev-1"])
+        XCTAssertFalse(pb.isPromised, "not re-armed: the reader would spend it again")
 
-        _ = await self.read(after: 0.05, command: false) // again: the budget is spent
-        XCTAssertFalse(pb.isPromised)
-        XCTAssertEqual(pastedEvents, 0)
+        _ = await paste() // from the cache
+        XCTAssertEqual(pastedEvents, 1)
+        XCTAssertEqual(backend.pastes, ["ev-1"])
     }
 
-    func testThePasteAfterAnEarlyReadShowsTheHUD() async {
+    func testTheEagerReaderEchoIsStillOurs() async {
         await copyIBANAndActivate(claude)
-        _ = await read(after: 0.05, command: false)
-        _ = await paste()
-        XCTAssertEqual(pastedEvents, 1)
+        _ = await read(after: 0.07, command: false)
+        pb.copy("Mon IBAN [IBAN_1]") // the VM writes it back, unmarked
+        guardian.tick()
+        await guardian.waitIdle()
+        XCTAssertEqual(backend.redactCalls, 1)
+        XCTAssertNotNil(guardian.swap)
+        XCTAssertFalse(pb.isPromised, "not re-armed: the sync would echo again")
+
+        guardian.activated(bundleId: "com.apple.Notes")
+        await guardian.waitIdle()
+        XCTAssertEqual(text(), "Mon IBAN \(FakeBackend.iban)")
+        XCTAssertNotNil(pb.items.first?["public.rtf"], "the original, not a detokenized echo")
+    }
+
+    func testPasteOriginalAfterAnEagerReaderSendsNoKeys() async {
+        await copyIBANAndActivate(claude)
+        _ = await read(after: 0.07, command: false)
+        pb.copy("Mon IBAN [IBAN_1]") // echo
+        guardian.tick()
+        await guardian.waitIdle()
+        clock.addTimeInterval(3)
+        XCTAssertEqual(guardian.pasteOriginal(), .onClipboardUnseen)
+        XCTAssertEqual(keys.sent, 0, "no paste seen: ⌘Z could undo something else")
+        XCTAssertEqual(text(), "Mon IBAN \(FakeBackend.iban)")
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(backend.overrides, ["paste-1"])
     }
 
     func testAReadOfTheReArmedPromiseWithoutCommandIsNotAPaste() async {

@@ -10,7 +10,8 @@ final class HUDController: ObservableObject {
         case text(result: RedactTextResultBox, app: String)
         case textConfirm(result: RedactTextResultBox, app: String)
         /// After "paste without redaction", when the original could only go on the clipboard.
-        case steppedAside
+        /// `seenPaste`: a redacted paste was seen, to undo before pasting again.
+        case steppedAside(seenPaste: Bool)
         case file(FileBlocked)
         case fileConfirm(FileBlocked)
         case fileGranted(app: String)
@@ -93,11 +94,10 @@ final class HUDController: ObservableObject {
     // MARK: actions
 
     func pasteOriginal() {
-        // Pasted in place: the field shows it, nothing to add.
-        if model?.clipboard.pasteOriginal() == .pasted {
-            dismiss()
-        } else {
-            show(.steppedAside, autoDismiss: 8)
+        switch model?.clipboard.pasteOriginal() {
+        case .pasted: dismiss() // pasted in place: the field shows it, nothing to add
+        case .onClipboardUnseen: show(.steppedAside(seenPaste: false), autoDismiss: 8)
+        default: show(.steppedAside(seenPaste: true), autoDismiss: 8)
         }
     }
 
@@ -183,10 +183,11 @@ private struct HUDView: View {
                 Button(l.t("redactionGuard.text.confirm.submit")) { controller.pasteOriginal() }
                     .keyboardShortcut(.defaultAction)
             }
-        case .steppedAside:
-            // Without Accessibility (or after the user typed), the original is only on the
-            // clipboard: the user swaps it in themselves.
-            header(l.t("redactionGuard.steppedAside.title"), l.t("agent.text.pasteOriginalHint"))
+        case let .steppedAside(seenPaste):
+            // Without Accessibility (or after the user typed, or with no paste seen), the
+            // original is only on the clipboard: the user swaps it in themselves.
+            header(l.t("redactionGuard.steppedAside.title"),
+                   l.t(seenPaste ? "agent.text.pasteOriginalHint" : "agent.text.pasteOriginalUnseenHint"))
             HStack { Spacer(); Button(l.t("redactionGuard.steppedAside.close")) { controller.dismiss() } }
         case let .file(blocked):
             header(l.t("redactionGuard.file.intercepted.title", count: 1, ["botName": bot]),
