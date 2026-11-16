@@ -14,6 +14,10 @@ final class HUDController: ObservableObject {
         case file(FileBlocked)
         case fileConfirm(FileBlocked)
         case fileGranted(app: String)
+        /// A message redacted on the network: by the time the card shows, it has been sent.
+        case message(TextRedacted)
+        case messageConfirm(TextRedacted)
+        case messageGranted(app: String)
     }
 
     @Published var card: Card?
@@ -29,6 +33,10 @@ final class HUDController: ObservableObject {
 
     func showFile(_ blocked: FileBlocked) {
         show(.file(blocked), autoDismiss: nil)
+    }
+
+    func showMessage(_ redacted: TextRedacted) {
+        show(.message(redacted), autoDismiss: model?.popupMode == "lite" ? 6 : nil)
     }
 
     func dismiss() {
@@ -98,6 +106,17 @@ final class HUDController: ObservableObject {
             dismiss()
         } else {
             show(.steppedAside, autoDismiss: 8)
+        }
+    }
+
+    /// The message already left, redacted. The grant covers the one the user sends next.
+    func allowNextMessage(_ redacted: TextRedacted) {
+        Task {
+            if await model?.grantTextBypass(eventId: redacted.eventId) == true {
+                show(.messageGranted(app: redacted.appName), autoDismiss: 8)
+            } else {
+                dismiss()
+            }
         }
     }
 
@@ -221,6 +240,44 @@ private struct HUDView: View {
             }
         case let .fileGranted(app):
             header(l.t("agent.file.bypassGranted", ["app": app]), nil)
+            HStack { Spacer(); Button(l.t("redactionGuard.steppedAside.close")) { controller.dismiss() } }
+        case let .message(redacted) where model.popupMode == "lite":
+            header(l.t("agent.message.title", ["botName": bot]),
+                   l.t("redactionGuard.lite.subtitleService", ["service": redacted.appName]))
+            HStack {
+                Button(l.t("redactionGuard.lite.viewDetails")) {
+                    controller.show(.message(redacted), autoDismiss: nil)
+                    model.popupMode = "full"
+                }
+                Spacer()
+                Button(l.t("redactionGuard.lite.close")) { controller.dismiss() }.keyboardShortcut(.cancelAction)
+            }
+        case let .message(redacted):
+            header(l.t("agent.message.title", ["botName": bot]), l.t("agent.message.subtitle"))
+            Text(l.t("agent.message.intro", ["service": redacted.appName, "workspace": workspace]))
+                .font(.callout).foregroundStyle(.secondary)
+            findings(redacted.types)
+            HStack {
+                if redacted.allowBypass {
+                    Button(l.t("agent.message.allowNext")) { controller.show(.messageConfirm(redacted), autoDismiss: nil) }
+                        .buttonStyle(.link)
+                }
+                Spacer()
+                Button(l.t("redactionGuard.text.intercepted.dismiss")) { controller.dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        case let .messageConfirm(redacted):
+            header(l.t("agent.message.allowNext"), nil)
+            confirmBox(l.t("redactionGuard.text.confirm.boxTitle"),
+                       l.t("agent.message.confirm.warning", ["service": redacted.appName]))
+            HStack {
+                Button(l.t("redactionGuard.text.confirm.cancel")) { controller.show(.message(redacted), autoDismiss: nil) }
+                Spacer()
+                Button(l.t("agent.message.confirm.submit")) { controller.allowNextMessage(redacted) }
+                    .keyboardShortcut(.defaultAction)
+            }
+        case let .messageGranted(app):
+            header(l.t("agent.message.bypassGranted", ["app": app]), nil)
             HStack { Spacer(); Button(l.t("redactionGuard.steppedAside.close")) { controller.dismiss() } }
         }
     }

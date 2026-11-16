@@ -177,13 +177,15 @@ final class DaemonClient: @unchecked Sendable {
     private func handle(line: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return }
         if let event = object["event"] as? String {
+            func payload<T: Decodable>(_ type: T.Type) -> T? {
+                guard let data = object["data"], let json = try? JSONSerialization.data(withJSONObject: data) else { return nil }
+                return try? JSONDecoder().decode(type, from: json)
+            }
             switch event {
             case "fileBlocked":
-                if let data = object["data"],
-                   let json = try? JSONSerialization.data(withJSONObject: data),
-                   let blocked = try? JSONDecoder().decode(FileBlocked.self, from: json) {
-                    onEvent(.fileBlocked(blocked))
-                }
+                if let blocked = payload(FileBlocked.self) { onEvent(.fileBlocked(blocked)) }
+            case "textRedacted":
+                if let redacted = payload(TextRedacted.self) { onEvent(.textRedacted(redacted)) }
             default:
                 onEvent(.stateChanged)
             }

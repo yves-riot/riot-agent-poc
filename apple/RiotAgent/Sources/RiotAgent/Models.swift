@@ -93,8 +93,18 @@ struct FileBlocked: Decodable, Equatable {
     var allowBypass: Bool
 }
 
+/// The proxy redacted the text of a message as it left the app.
+struct TextRedacted: Decodable, Equatable {
+    var eventId: String
+    var bundleId: String
+    var appName: String
+    var types: [TypeCount]
+    var allowBypass: Bool
+}
+
 enum DaemonEvent {
     case fileBlocked(FileBlocked)
+    case textRedacted(TextRedacted)
     case stateChanged
 }
 

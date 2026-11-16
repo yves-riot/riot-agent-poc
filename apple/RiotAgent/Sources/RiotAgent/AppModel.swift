@@ -67,6 +67,9 @@ final class AppModel: ObservableObject, GuardBackend, BlockingBackend {
         case .fileBlocked(let blocked):
             hud.showFile(blocked)
             Task { await refresh() }
+        case .textRedacted(let redacted):
+            hud.showMessage(redacted)
+            Task { await refresh() }
         }
     }
 
@@ -122,6 +125,12 @@ final class AppModel: ObservableObject, GuardBackend, BlockingBackend {
     func grantFileBypass(eventId: String) async -> Bool {
         guard let client else { return false }
         let ok: Nothing? = try? await client.call("grantFileBypass", ["eventId": eventId])
+        return ok != nil
+    }
+
+    func grantTextBypass(eventId: String) async -> Bool {
+        guard let client else { return false }
+        let ok: Nothing? = try? await client.call("grantTextBypass", ["eventId": eventId])
         return ok != nil
     }
 
