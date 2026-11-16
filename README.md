@@ -5,12 +5,18 @@ The browser extension's sensitive-data protection, at the OS level, for AI deskt
 documents holding sensitive data are blocked from being opened by them. Installed and authorized
 entirely by MDM; the daemon is the base of Riot's future MDM agent.
 
+A second path is being validated to replace those OS hooks: the daemon's local proxy checks what
+the AI apps send, on the network. It also sees what the hooks cannot (typed text, a file chosen
+in the picker). See [Network interception](#network-interception-being-validated).
+
 ```
 Riot.app (menu bar, SwiftUI)  ── clipboard guard + HUD + popup
       │  Unix socket, line-delimited JSON (core/riot-ipc)
-riot-daemon (Rust, root)      ── detection engine, policy, parrot sync, report outbox
-      ▲  same socket (scanFile with deadline)
+riot-daemon (Rust, root)      ── detection engine, policy, parrot sync, report outbox,
+      ▲                          local proxy (core/riot-proxy)
+      │  same socket (scanFile with deadline, netConfig), and CONNECT to the proxy
 RiotES.systemextension        ── Endpoint Security AUTH_OPEN on the protected apps' processes
+RiotNet.systemextension       ── transparent proxy: relays the protected apps' HTTPS to the daemon
 ```
 
 **Detection is the extension's own code.** `js/` bundles `@tryriot/sonar-detection` (and the
@@ -29,9 +35,11 @@ Why Rust, QuickJS and native apps: [docs/stack-choices.md](docs/stack-choices.md
 | `core/riot-detect`                   | QuickJS host: `redact` (numbered tokens per app), `detokenize`, `detect`, `scan_bytes`/`scan_path`, deadlines via the interrupt handler |
 | `core/riot-api`                      | parrot client (`docs/parrot-agent-api.md`)                                                                                              |
 | `core/riot-ipc`                      | local protocol types + blocking client                                                                                                  |
+| `core/riot-proxy`                    | local TLS-intercepting proxy: device CA, SNI routing, request rules, JSON text redaction, upload gating, record mode                    |
 | `core/riot-daemon`                   | the daemon (`riot-daemon`) and a CLI (`riotctl`)                                                                                        |
 | `apple/RiotAgent`                    | menu bar app (SwiftPM): popup, clipboard guard, HUD, installer                                                                          |
 | `apple/RiotES`                       | Endpoint Security system extension                                                                                                      |
+| `apple/RiotNet`                      | network system extension (`NETransparentProxyProvider`)                                                                                 |
 | `apple/build-app.sh`, `build-pkg.sh` | `Riot.app` and the MDM `.pkg`                                                                                                           |
 | `mdm/`                               | configuration profile template + renderer                                                                                               |
 | `dev/`                               | stub parrot, dev settings, `run-dev.sh`                                                                                                 |
@@ -200,8 +208,104 @@ ES deadline ─► budget (Swift: semaphore + call timeout)
             ─► AtomicU64 read by QuickJS's interrupt handler
 ```
 
+## Network interception (being validated)
+
+Instead of guarding the clipboard, drags and file opens, check the requests themselves. The
+daemon runs a proxy on loopback (`127.0.0.1:47610`); the network extension hands it the
+protected apps' TCP 443 connections and refuses their QUIC, so they stay on HTTP/2.
+
+- **What is decrypted.** The proxy reads the server name of each TLS ClientHello. A host of a
+  protected service is intercepted, with a leaf certificate signed by the device's own CA
+  (`<data dir>/ca/ca.pem`, key `0600`, created on first run). Any other connection is relayed
+  byte for byte to the address it asked for, still encrypted.
+- **What is changed.** Only requests a rule matches (`network_rules`, served with the policy:
+  [docs/parrot-agent-api.md](docs/parrot-agent-api.md)). `json_text` redacts the selected
+  strings of a JSON body, with the same token memory as the clipboard guard, so a copy out of
+  the app still gets the values back. `multipart_file` and `raw_file` have the upload scanned,
+  and answer `403` instead of forwarding a file with sensitive data; so does `json_text` for a
+  file the body embeds in base64. Everything else, responses and WebSockets included, is
+  forwarded as it came, streamed.
+- **Protobuf.** The Claude app sends a chat message as a Connect call
+  (`…ConversationService/PerformAction`, `application/proto`). `proto_text` redacts strings in
+  such a body without its schema: a rule names them by field numbers (`2.3`), and the lengths
+  around a changed string are recomputed.
+- **Claude Code.** The Claude app's Code tab runs a separate binary that calls
+  `api.anthropic.com/v1/messages` itself: the files its tools read travel there, a text file as
+  the text of a tool result, a PDF as a base64 document. One rule covers both. Each request
+  repeats the conversation, so the daemon remembers what it decided for each text (`history`):
+  a text is scanned, shown and reported once, and redacted the same way in every later request.
+- **What the user sees.** The message is already sent when the HUD shows what was redacted: the
+  app displays the original, the service received the tokens, and the answer uses them. "Send
+  without redaction" allows the next message with sensitive data from that app, within 60 s,
+  and reports it as not redacted. A refused upload shows as the app's own upload error plus the
+  file HUD; "send anyway" then allows the same content for 60 s.
+- **When something fails.** No daemon or no proxy: the extension claims nothing and the apps
+  connect directly. An engine failure leaves text as it is; a file that cannot be read (over
+  32 MiB, compressed, broken envelope) is refused, as for the ES path.
+
+Try it without the extension: the proxy accepts any HTTP `CONNECT`.
+
+```sh
+RIOT_PROXY_RECORD=1 dev/run-dev.sh          # record mode logs the shape of each request
+riotctl status                              # proxy.addr, proxy.caCert, counters
+ca=$(riotctl status | sed -n 's/.*"caCert": "\(.*\)",/\1/p')
+curl -x http://127.0.0.1:47610 --cacert "$ca" https://claude.ai/api/bootstrap
+```
+
+`RIOT_PROXY_ADDR` moves the listener (`off` disables it). Record mode writes one
+`riot_proxy::record` line per request to a protected host: method, path, content type, size and
+the shape of a JSON or protobuf body (`{prompt:str(57),files:[0×]}`, `{1:str(36),2:{3:str(43)}}`),
+never a value; and one line per host relayed without being decrypted. It is how the rules are
+written. `dev/run-dev.sh` keeps the log in `$RIOT_DEV_DIR/daemon.log`.
+
+Checked so far, with `curl` through the proxy against the real hosts: interception of
+`claude.ai` and `chatgpt.com` over HTTP/2 with the device CA, refusal without it
+(`handshakeFailures` counts it), `example.com` relayed with its own certificate, a message with
+an IBAN redacted and reported, an upload with an IBAN refused then allowed after "send anyway".
+A request on a warm connection took 60 ms end to end. The first request after one daemon start
+took 9.8 s; it did not happen again on the next start, and the cause is not known.
+
+Checked with Claude Code 2.1.325 (the binary the Claude app runs for its Code tab, started by
+hand with `HTTPS_PROXY`): it trusts the device CA from the keychain; a text file with an IBAN
+reaches the model as `[IBAN_1]`; a PDF with an IBAN is refused (Claude Code prints
+`API Error: 403 Riot blocked this upload.`); a second turn of the same conversation reports
+nothing new.
+
 ## Not done / open
 
+- **Network interception:**
+  - Claude (5.11492.5) has been run through the proxy with `--proxy-server`, the device CA
+    trusted in the keychain: it accepts the CA, Cloudflare lets the proxy's TLS through, and a
+    PDF with an IBAN attached in the chat is refused. A message with an IBAN is rewritten in
+    its `PerformAction` call, accepted by the service (`200`), answered with the token, and
+    reported. ChatGPT has not been run.
+  - The `network_rules` in `dev/stub-parrot.mjs` for ChatGPT are candidates, not read from the
+    app. Record mode is there to confirm or replace them. Claude's follow the app's private
+    protobuf schema by field number: an update of the app can move them.
+  - Claude Code works on what it is sent: a redacted file is tokens to the model, so an edit
+    it writes back holds `[IBAN_1]`, not the value. Answers are not detokenized yet.
+  - Claude Code puts the user's own e-mail and names in its context: every new conversation
+    starts with a "message redacted" for them. Its system prompt (`/system`) is not looked at.
+  - A PDF refused in a conversation stays in it: every later request is refused too, until
+    "send anyway" or a new conversation. The `403` shows as "Failed to authenticate".
+  - `RiotNet` claims connections by bundle id. Claude Code is signed `com.anthropic.claude-code`,
+    not as a helper of the Claude app: it needs its own entry in `desktop_apps` to be routed.
+    With `--proxy-server` the Claude app hands its proxy to the Code tab itself, which is how it
+    was tested; the `claude` CLI run from a terminal does not go through it.
+  - `RiotNet` type-checks against the SDK but is not built into the app or run: it needs a
+    Developer ID identity and provisioning profiles with the Network Extensions capability
+    (`WITH_NET=1`, see `apple/build-app.sh`). The MDM payload for it is written, not exercised.
+    Whether a network system extension may run unsandboxed (it talks to the daemon's Unix
+    socket) is to confirm at that point.
+  - CA trust in production: a per-device CA cannot be trusted without a prompt. The intended
+    shape is a per-workspace root in the MDM profile, constrained to the AI hosts, signing a
+    per-device intermediate through parrot.
+  - The loopback listener takes any local `CONNECT` and believes the `X-Riot-*` headers. A
+    process that lies only gets its own traffic inspected, but the peer should be checked.
+  - Out of scope for now: code in the apps that does not use the keychain's trust (the Codex
+    CLI, Claude Code), redacting files instead of refusing them, and putting the values back
+    in the answers.
+  - Until both apps pass end to end, the clipboard guard, the drag guard and RiotES stay.
 - **ES extension in production:** verified only as a root binary in a VM with SIP off
   ([docs/es-vm.md](docs/es-vm.md)). Shipping it needs Apple's
   `com.apple.developer.endpoint-security.client` entitlement (request it now; it takes weeks), then

@@ -32,6 +32,14 @@ RiotES.systemextension (Swift : Endpoint Security)               blocage des fic
 Toutes les décisions et toute la logique sont dans le daemon. Les apps sont de simples clients :
 elles affichent ce qu'il dit et s'accrochent à ce que seul l'OS permet d'intercepter.
 
+Un chemin réseau est en cours de validation pour remplacer les hooks presse-papier,
+glisser-déposer et fichiers : un proxy local dans le daemon (`core/riot-proxy`), alimenté par une
+extension réseau minimale, contrôle les requêtes que les apps d'IA envoient. Il suit la même
+architecture : ni le proxy ni l'extension ne portent de policy, le daemon décide, et le proxy est
+du Rust que Windows réutilisera tel quel. Ce que ça coûte : une autorité de certification que les
+apps doivent approuver, et des règles qui suivent les API privées des services (servies par parrot
+pour cette raison). Voir le README.
+
 ## Rust pour le daemon
 
 - **Un seul daemon pour les deux OS** : un LaunchDaemon sur macOS, un service sur Windows, avec le

@@ -30,6 +30,13 @@ RiotES.systemextension (Swift: Endpoint Security)               file blocking, p
 All decisions and logic live in the daemon; the apps are thin clients that show what it says and
 hook what only the OS can hook.
 
+A network path is being validated to replace the clipboard, drag and file hooks: a local proxy
+in the daemon (`core/riot-proxy`), fed by a thin network extension, checks the requests the AI
+apps send. It fits the same shape: the proxy and the extension hold no policy, the daemon
+decides, and the proxy is Rust that Windows will reuse as it is. What it costs is a certificate
+authority the apps must trust, and rules that follow the services' private APIs (served by
+parrot for that reason). See the README.
+
 ## Rust for the daemon
 
 - **One daemon for both OSes**: a LaunchDaemon on macOS, a service on Windows, same code and
