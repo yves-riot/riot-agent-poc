@@ -19,6 +19,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_SOCKET: &str = "/var/run/com.tryriot.agent/agent.sock";
+/// Where the daemon's proxy listens on loopback, unless `RIOT_PROXY_ADDR` says otherwise.
+pub const DEFAULT_PROXY_PORT: u16 = 47610;
 
 // ---------- requests ----------
 
@@ -48,6 +50,12 @@ pub enum Request {
     ReportOverride { paste_id: String },
     /// What the ES extension watches: the protected apps' executables and the scanned extensions.
     EsConfig,
+    /// What the network extension relays to the proxy: the protected apps, and the proxy's port.
+    NetConfig,
+    /// "Allow my next message", from the HUD of a `textRedacted` event: the next message of that
+    /// app goes out as written, within the TTL, and is reported as not redacted.
+    #[serde(rename_all = "camelCase")]
+    GrantTextBypass { event_id: String },
     /// Keep this connection open for pushed [`Event`]s.
     Subscribe,
     /// Refetch config and policies now.
@@ -104,6 +112,27 @@ pub struct Status {
     pub engine_heap_mib: f64,
     pub target_apps: Vec<TargetApp>,
     pub pending_reports: usize,
+    /// The local proxy, when it is running.
+    pub proxy: Option<ProxyStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProxyStatus {
+    /// Loopback address it listens on (`127.0.0.1:47610`).
+    pub addr: String,
+    /// The CA certificate the AI apps must trust (PEM file).
+    pub ca_cert: String,
+    /// Record mode: request shapes are logged.
+    pub record: bool,
+    /// Connections decrypted / relayed untouched.
+    pub intercepted: u64,
+    pub relayed: u64,
+    /// Requests whose text was redacted / uploads refused.
+    pub rewritten: u64,
+    pub blocked: u64,
+    /// Intercepted connections an app gave up on: it does not trust the CA.
+    pub handshake_failures: u64,
 }
 
 /// The menu bar popup, derived like the extension's `App.vue` view.
@@ -142,7 +171,8 @@ pub struct PopupState {
 pub struct RecentEvent {
     pub event_id: String,
     pub at: String,
-    /// `textRedacted` | `fileBlocked` | `fileAllowedByUser` | `originalPasted`
+    /// `textRedacted` | `originalPasted` (clipboard), `messageRedacted` | `originalSent`
+    /// (network), `fileBlocked` | `fileAllowedByUser`
     pub kind: String,
     pub app_name: String,
     pub types: Vec<TypeCount>,
@@ -200,6 +230,24 @@ pub struct WatchedApp {
     pub executable_prefixes: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NetConfig {
+    /// The proxy's loopback port. `None` when it is not running: the extension then relays
+    /// nothing and the apps connect directly.
+    pub proxy_port: Option<u16>,
+    /// Empty when monitoring is off.
+    pub apps: Vec<NetApp>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NetApp {
+    /// The app's bundle identifier; its helpers sign as `<bundleId>.<something>`.
+    pub bundle_id: String,
+    pub team_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanFileResult {
@@ -225,6 +273,9 @@ pub enum Event {
         types: Vec<TypeCount>,
         allow_bypass: bool,
     },
+    /// The proxy redacted the text of a message on its way out of `bundle_id`.
+    #[serde(rename_all = "camelCase")]
+    TextRedacted { event_id: String, bundle_id: String, app_name: String, types: Vec<TypeCount>, allow_bypass: bool },
     StateChanged,
 }
 
@@ -318,5 +369,12 @@ mod tests {
         assert_eq!(view, r#"{"kind":"signedIn","name":"Ana","redactions":3}"#);
         let ev = serde_json::to_string(&Event::StateChanged).unwrap();
         assert_eq!(ev, r#"{"event":"stateChanged"}"#);
+        let ev = Event::TextRedacted { event_id: "e".into(), bundle_id: "b".into(), app_name: "A".into(), types: vec![], allow_bypass: true };
+        assert_eq!(
+            serde_json::to_string(&ev).unwrap(),
+            r#"{"event":"textRedacted","data":{"eventId":"e","bundleId":"b","appName":"A","types":[],"allowBypass":true}}"#
+        );
+        let grant = RequestEnvelope { id: 2, request: Request::GrantTextBypass { event_id: "e".into() } };
+        assert_eq!(serde_json::to_string(&grant).unwrap(), r#"{"id":2,"method":"grantTextBypass","params":{"eventId":"e"}}"#);
     }
 }

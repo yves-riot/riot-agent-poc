@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["riot-detect", "riot-api", "riot-ipc", "riot-daemon"]
+members = ["riot-detect", "riot-api", "riot-ipc", "riot-proxy", "riot-daemon"]
 
 [workspace.package]
 edition = "2024"
@@ -28,6 +28,7 @@ secrecy = { version = "0.10", features = ["serde"] }
 riot-detect = { path = "riot-detect" }
 riot-api = { path = "riot-api" }
 riot-ipc = { path = "riot-ipc" }
+riot-proxy = { path = "riot-proxy" }
 
 [profile.release]
 lto = "thin"

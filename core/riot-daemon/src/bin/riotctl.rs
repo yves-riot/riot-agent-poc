@@ -1,12 +1,13 @@
 //! Talk to a running daemon from a terminal.
 //!
 //! ```text
-//! riotctl status | popup | refresh | watch | es-config
+//! riotctl status | popup | refresh | watch | es-config | net-config
 //! riotctl redact <bundle-id> <text>
 //! riotctl detok <bundle-id> <text>
 //! riotctl scan <bundle-id> <path>          (root, or daemon started with RIOT_DEV_ALLOW_SCAN=1)
 //! riotctl paste <event-id>                (report a paste of a redactText event)
 //! riotctl bypass <event-id> | override <paste-id>
+//! riotctl allow-next <event-id>           ("allow my next message" of a textRedacted event)
 //! ```
 //!
 //! Every command and its output: docs/riotctl.md.
@@ -25,6 +26,8 @@ fn main() {
         Some("refresh") => Request::Refresh,
         Some("watch") => Request::Subscribe,
         Some("es-config") => Request::EsConfig,
+        Some("net-config") => Request::NetConfig,
+        Some("allow-next") => Request::GrantTextBypass { event_id: arg(1) },
         Some("redact") => Request::RedactText { bundle_id: arg(1), text: arg(2) },
         Some("detok") => Request::Detokenize { bundle_id: arg(1), text: arg(2) },
         Some("scan") => Request::ScanFile { bundle_id: arg(1), path: arg(2), deadline_ms: Some(10_000) },
@@ -59,6 +62,8 @@ fn main() {
 }
 
 fn usage() -> ! {
-    eprintln!("usage: riotctl status|popup|refresh|watch|es-config|redact <bundle> <text>|detok <bundle> <text>|scan <bundle> <path>|paste <event>|bypass <event>|override <paste>");
+    eprintln!(
+        "usage: riotctl status|popup|refresh|watch|es-config|net-config|redact <bundle> <text>|detok <bundle> <text>|scan <bundle> <path>|paste <event>|bypass <event>|override <paste>|allow-next <event>"
+    );
     std::process::exit(2)
 }

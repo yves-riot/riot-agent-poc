@@ -132,6 +132,8 @@ async fn handle(agent: &Agent, uid: u32, request: Request) -> Result<serde_json:
         Request::ReportPaste { event_id } => json(agent.report_paste(&event_id)?),
         Request::ReportOverride { paste_id } => json(agent.report_override(&paste_id)?),
         Request::EsConfig => json(agent.es_config()),
+        Request::NetConfig => json(agent.net_config()),
+        Request::GrantTextBypass { event_id } => json(agent.grant_text_bypass(&event_id)?),
         Request::Refresh => {
             agent.refresh.notify_one();
             Ok(serde_json::Value::Null)

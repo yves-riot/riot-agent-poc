@@ -56,11 +56,12 @@ One call for what the extension gets in three (identity, workspace info, policie
 "Account not recognized"). `redactions_last_30_days` should count the employee's redactions from
 both the extension and the agent.
 
-### Policy: one addition
+### Policy: two additions
 
-`SensitiveDataMonitoringService` gains an optional `desktop_apps`; everything else is the
-extension's `browser_extension_sensitive_data_monitoring` policy unchanged (`enabled`,
-`allow_bypass_redaction`, `data_types`).
+`SensitiveDataMonitoringService` gains an optional `desktop_apps` and an optional
+`network_rules`; everything else is the extension's `browser_extension_sensitive_data_monitoring`
+policy unchanged (`enabled`, `allow_bypass_redaction`, `data_types`). The agent also reads the
+service's existing `domain`.
 
 ```json
 "desktop_apps": [
@@ -79,6 +80,45 @@ extension's `browser_extension_sensitive_data_monitoring` policy unchanged (`ena
 Catalog values seen on a real Mac (Nov 2026): ChatGPT is `com.openai.codex`, Claude Desktop is
 `com.anthropic.claudefordesktop`. The catalog lives next to the extension's
 (`browser_extension_sensitive_data_monitoring_services.ex`).
+
+`network_rules` tells the agent's local proxy which requests of the service to look into. The
+services' APIs are private and change without notice, so the rules live here, where they can be
+fixed for every device at once, and not in the agent.
+
+```json
+"network_rules": [
+  { "host": "claude.ai", "method": "POST",
+    "path": "/api/organizations/*/chat_conversations/*/completion",
+    "kind": "json_text", "text_pointers": ["/prompt"] },
+  { "host": "claude.ai", "method": "POST",
+    "path": "/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/PerformAction",
+    "kind": "proto_text", "text_fields": ["2.3"] },
+  { "host": "claude.ai", "method": "POST", "path": "/api/*/upload", "kind": "multipart_file" },
+  { "host": "api.anthropic.com", "method": "POST", "path": "/v1/messages",
+    "kind": "json_text", "history": true,
+    "text_pointers": ["/messages/*/content", "/messages/*/content/*/text",
+                      "/messages/*/content/*/content", "/messages/*/content/*/content/*/text"],
+    "file_pointers": ["/messages/*/content/*/source/data", "/messages/*/content/*/content/*/source/data"] },
+  { "host": "*.oaiusercontent.com", "method": "PUT", "path": "/**", "kind": "raw_file" }
+]
+```
+
+| Field | Use |
+|---|---|
+| `host` | exact host, or `*.example.com` for its subdomains. The proxy decrypts the service's `domain` and every host its rules name, nothing else |
+| `method` | optional; any method when absent |
+| `path` | matched segment by segment: `*` is one segment, a final `**` the rest |
+| `kind` | `json_text`: redact the strings of a JSON body, and scan the files it embeds. `proto_text`: redact the strings of a protobuf body. `multipart_file`: scan each part that has a filename. `raw_file`: the body is the file |
+| `text_pointers` | `json_text` only: JSON pointers of the strings to redact, with the same wildcards (`/messages/*/content/parts/*`). Every string of the body when empty |
+| `file_pointers` | `json_text` only, optional: JSON pointers of the strings that hold a file in base64, bare or as a `data:` URL. Each is scanned like an upload, and one file with sensitive data refuses the request (`403`). A selected string that is not base64 is redacted as text |
+| `text_fields` | `proto_text` only: the strings to redact, each by the field numbers that lead to it (`2.3`: field 3 of the message in field 2). The agent has no schema; record mode shows the numbers |
+| `history` | `json_text` only, optional: the request repeats the conversation so far (an API that keeps no state, such as the one Claude Code calls). A text is then scanned, shown to the user and reported the first time it is sent, and gets the same answer in every later request |
+
+A request no rule matches is forwarded untouched. A rule of a `kind` the agent does not know is
+skipped, so new kinds can be served before every agent understands them. The `api.anthropic.com`
+rule was checked against Claude Code 2.1.325, and the `PerformAction` and `/api/*/upload` rules
+were read from Claude 5.11492.5's traffic; the other example values are candidates: confirm them with
+the agent's record mode (see the README).
 
 **Open product question:** services marked `authorized` get account detection in the browser
 (work vs personal account). The agent cannot tell which account a desktop app is signed into, so

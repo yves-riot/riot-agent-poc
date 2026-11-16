@@ -29,11 +29,12 @@ core/target/release/riotctl status
 
 | Command     | Does                                                                                     |
 | ----------- | ---------------------------------------------------------------------------------------- |
-| `status`    | Version, configured, device id, monitoring, last sync and error, engine heap, protected apps (installed or not), reports waiting to be sent. |
+| `status`    | Version, configured, device id, monitoring, last sync and error, engine heap, protected apps (installed or not), reports waiting to be sent, and the local proxy when it runs: address, CA certificate path, record mode, counters (`intercepted`, `relayed`, `rewritten`, `blocked`, `handshakeFailures`). |
 | `popup`     | What the menu bar popup shows: view (`loading`, `notConfigured`, `standby`, `signedIn`, `reconnect`, `error`), bot name and icon, company, bypass allowed, protected apps, recent events (content-free). |
 | `refresh`   | Refetch config and policies from parrot now, instead of waiting for the next sync.        |
-| `watch`     | Subscribe and print each pushed event, one JSON line each, until interrupted: `stateChanged`, `fileBlocked` (file name, app, types, bypass allowed). |
+| `watch`     | Subscribe and print each pushed event, one JSON line each, until interrupted: `stateChanged`, `fileBlocked` (file name, app, types, bypass allowed), `textRedacted` (a message redacted by the proxy: app, types, bypass allowed). |
 | `es-config` | What the ES extension watches: protected apps' bundle ids, team ids and executable path prefixes, and the file extensions scanned. Empty `watched` when monitoring is off. |
+| `net-config` | What the network extension relays: the proxy's port (`null` when it is not running) and the protected apps' bundle and team ids. Empty `apps` when monitoring is off. |
 
 ### Text
 
@@ -43,6 +44,7 @@ core/target/release/riotctl status
 | `detok <bundle-id> <text>`     | Put back the values of the tokens in `text` (`[IBAN_1]` → the IBAN), as for a copy out of that app. Returns `text` and the number `replaced`. |
 | `paste <event-id>`             | Report a paste of a `redact` event's text: queues a report for parrot and adds a recent event. Returns a `pasteId`. Each call is a separate paste and report. |
 | `override <paste-id>`          | "Paste without redaction": re-sends that paste's report as not redacted. `forbidden` if the policy does not allow bypass. |
+| `allow-next <event-id>`        | "Send without redaction", for a `textRedacted` event of the proxy: the next message with sensitive data from the same user and app, within 60 s, goes out as written and is reported as not redacted. `forbidden` if the policy does not allow bypass. |
 
 Token memory is per user and per app: tokens from `redact` resolve with `detok` only for the
 same bundle id, and only from the same user. As riotctl runs as you, it shares that memory
@@ -53,7 +55,7 @@ with Riot.app.
 | Command                    | Does                                                                          |
 | -------------------------- | ----------------------------------------------------------------------------- |
 | `scan <bundle-id> <path>`  | Scan a file as if that app opened it, with a 10 s deadline: `decision` (`allow`, `deny`), `reason` (`clean`, `detections`, `bypass`, `unsupported`, `notTarget`, `disabled`, `error`, `timeout`), `types`, `eventId`. A `deny` is pushed to `watch` as `fileBlocked`. Reserved to root (the ES extension), unless the daemon runs with `RIOT_DEV_ALLOW_SCAN=1`, as `dev/run-dev.sh` does. |
-| `bypass <event-id>`        | "Send anyway" for a blocked file: the next open of that same file (same inode and mtime) within 60 s is allowed. `forbidden` if the policy does not allow bypass. |
+| `bypass <event-id>`        | "Send anyway" for a blocked file: the next open of that same file (same inode and mtime), or the next upload of the same content through the proxy, within 60 s is allowed. `forbidden` if the policy does not allow bypass. |
 
 ## Walkthrough
 

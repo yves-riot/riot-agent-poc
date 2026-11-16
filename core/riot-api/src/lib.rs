@@ -107,9 +107,17 @@ pub struct MonitoredService {
     #[serde(default)]
     pub authorized: bool,
     pub logo_url: Option<String>,
+    /// The service's site (`claude.ai`), as in the extension's policy.
+    #[serde(default)]
+    pub domain: Option<String>,
     /// New for the agent: the native apps of this service, per platform.
     #[serde(default)]
     pub desktop_apps: Vec<DesktopApp>,
+    /// New for the agent: the requests of this service the local proxy looks into (riot-proxy's
+    /// `Rule`). Raw JSON, so that a rule kind this agent version does not know is skipped
+    /// instead of failing the whole config.
+    #[serde(default)]
+    pub network_rules: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

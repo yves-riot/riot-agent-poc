@@ -1,6 +1,10 @@
 // A stand-in for parrot's /api/agent/* endpoints (see docs/parrot-agent-api.md), for local runs.
 //   node dev/stub-parrot.mjs [port]       GET /portal/_stub/state shows devices, heartbeats, reports
 // Env: STUB_MONITORING=0 (policy disabled), STUB_NO_EMPLOYEE=1, STUB_NO_BYPASS=1.
+//
+// The `network_rules` below are candidates, written from what the services' web apps were known
+// to send. Check them against the desktop apps with the daemon's record mode
+// (RIOT_PROXY_RECORD=1) before relying on them: a rule that matches nothing protects nothing.
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 
@@ -26,12 +30,41 @@ const policy = () => ({
       domain: 'chatgpt.com', domains: ['https://chatgpt.com/*'], excluded_domains: [], account_detection: null,
       desktop_apps: [{ platform: 'macos', bundle_id: 'com.openai.codex', team_id: '2DC432GLL2',
         executable_prefixes: ['/Applications/ChatGPT.app/'] }],
+      network_rules: [
+        { host: 'chatgpt.com', method: 'POST', path: '/backend-api/conversation', kind: 'json_text',
+          text_pointers: ['/messages/*/content/parts/*'] },
+        { host: 'chatgpt.com', method: 'POST', path: '/backend-api/f/conversation', kind: 'json_text',
+          text_pointers: ['/messages/*/content/parts/*'] },
+        { host: '*.oaiusercontent.com', method: 'PUT', path: '/**', kind: 'raw_file' },
+      ],
     },
     {
       service_id: 'anthropic', display_name: 'Claude', authorized: false, logo_url: null,
       domain: 'claude.ai', domains: ['https://claude.ai/*'], excluded_domains: [], account_detection: null,
       desktop_apps: [{ platform: 'macos', bundle_id: 'com.anthropic.claudefordesktop', team_id: 'Q6L2SF6YDW',
         executable_prefixes: ['/Applications/Claude.app/'] }],
+      network_rules: [
+        // The Claude app's chat (Claude 5.11492.5) sends a message as a protobuf call: its
+        // text is field 3 of the message in field 2. An attached file goes to `/api/<org>/upload`.
+        { host: 'claude.ai', method: 'POST',
+          path: '/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/PerformAction',
+          kind: 'proto_text', text_fields: ['2.3'] },
+        { host: 'claude.ai', method: 'POST', path: '/api/*/upload', kind: 'multipart_file' },
+        // Candidates, not seen from the app: what the web app was known to send.
+        { host: 'claude.ai', method: 'POST', path: '/api/organizations/*/chat_conversations/*/completion',
+          kind: 'json_text', text_pointers: ['/prompt'] },
+        { host: 'claude.ai', method: 'POST', path: '/api/organizations/*/chat_conversations/*/retry_completion',
+          kind: 'json_text', text_pointers: ['/prompt'] },
+        { host: 'claude.ai', method: 'POST', path: '/api/organizations/*/upload', kind: 'multipart_file' },
+        { host: 'claude.ai', method: 'POST', path: '/api/organizations/*/convert_document', kind: 'multipart_file' },
+        // Claude Code (the app's Code tab) calls the API itself. A request carries what the user
+        // wrote and what the tools read, a PDF as a base64 document, and repeats the
+        // conversation. Checked against Claude Code 2.1.325.
+        { host: 'api.anthropic.com', method: 'POST', path: '/v1/messages', kind: 'json_text', history: true,
+          text_pointers: ['/messages/*/content', '/messages/*/content/*/text',
+            '/messages/*/content/*/content', '/messages/*/content/*/content/*/text'],
+          file_pointers: ['/messages/*/content/*/source/data', '/messages/*/content/*/content/*/source/data'] },
+      ],
     },
   ],
 });

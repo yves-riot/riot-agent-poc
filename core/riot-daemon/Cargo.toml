@@ -24,6 +24,7 @@ plist = { workspace = true }
 riot-api = { workspace = true }
 riot-detect = { workspace = true }
 riot-ipc = { workspace = true }
+riot-proxy = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

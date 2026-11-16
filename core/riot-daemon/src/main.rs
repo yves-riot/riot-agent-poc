@@ -15,6 +15,7 @@ mod sync;
 use std::sync::Arc;
 
 use riot_detect::{Engine, EngineConfig};
+use riot_proxy::{Proxy, ProxyConfig, Upstream};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -31,6 +32,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(ms = started.elapsed().as_millis() as u64, "detection engine ready");
 
     let agent = Arc::new(agent::Agent::new(paths, engine)?);
+    // Kept for the daemon's life: dropping it stops the listener.
+    let _proxy = start_proxy(&agent).await;
     tokio::spawn(sync::run(agent.clone()));
     tokio::spawn(sync::flush_reports(agent.clone()));
 
@@ -40,4 +43,27 @@ async fn main() -> anyhow::Result<()> {
     }
     let _ = std::fs::remove_file(&agent.paths.socket);
     Ok(())
+}
+
+/// The proxy is one of the daemon's services, not a condition for the others: if it cannot
+/// start (port taken, unwritable CA), the daemon runs without it and `status` shows no proxy.
+async fn start_proxy(agent: &Arc<agent::Agent>) -> Option<Proxy<agent::Agent>> {
+    let listen = agent.paths.proxy_addr?;
+    let config = ProxyConfig { listen, ca_dir: agent.paths.ca_dir(), record: agent.paths.proxy_record, upstream: Upstream::default() };
+    match Proxy::start(config, agent.clone()).await {
+        Ok(proxy) => {
+            let info = agent::ProxyInfo {
+                addr: proxy.addr(),
+                ca_cert: proxy.ca_cert().to_owned(),
+                record: agent.paths.proxy_record,
+                stats: proxy.stats_handle(),
+            };
+            let _ = agent.proxy.set(info);
+            Some(proxy)
+        }
+        Err(e) => {
+            tracing::error!(%listen, error = %e, "the proxy could not start");
+            None
+        }
+    }
 }
