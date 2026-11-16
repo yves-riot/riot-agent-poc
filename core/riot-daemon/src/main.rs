@@ -8,6 +8,7 @@
 mod agent;
 mod config;
 mod device;
+mod gateway;
 mod reports;
 mod server;
 mod sync;
@@ -34,8 +35,10 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(sync::run(agent.clone()));
     tokio::spawn(sync::flush_reports(agent.clone()));
 
+    let gateway_addr = config::gateway_addr()?;
     tokio::select! {
         r = server::serve(agent.clone()) => r?,
+        r = gateway::serve(agent.clone(), gateway_addr) => r?,
         _ = tokio::signal::ctrl_c() => tracing::info!("stopping"),
     }
     let _ = std::fs::remove_file(&agent.paths.socket);

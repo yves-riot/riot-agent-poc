@@ -32,6 +32,7 @@ const policy = () => ({
       domain: 'claude.ai', domains: ['https://claude.ai/*'], excluded_domains: [], account_detection: null,
       desktop_apps: [{ platform: 'macos', bundle_id: 'com.anthropic.claudefordesktop', team_id: 'Q6L2SF6YDW',
         executable_prefixes: ['/Applications/Claude.app/'] }],
+      api_hosts: ['api.anthropic.com'],
     },
   ],
 });

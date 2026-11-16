@@ -90,10 +90,10 @@ pub struct Agent {
     last_block_notice: Mutex<HashMap<FileIdentity, Instant>>,
 }
 
-struct Target {
-    service_id: String,
+pub(crate) struct Target {
+    pub(crate) service_id: String,
     app_name: String,
-    options: Options,
+    pub(crate) options: Options,
     allow_bypass: bool,
 }
 
@@ -131,11 +131,20 @@ impl Agent {
     /// The service a frontmost app belongs to, with the policy that applies, when the agent is
     /// active and the app is one of the policy's desktop apps.
     fn target(&self, bundle_id: &str) -> Option<Target> {
+        self.target_where(|s| {
+            s.desktop_apps.iter().any(|a| a.platform == PLATFORM && a.bundle_id.as_deref() == Some(bundle_id))
+        })
+    }
+
+    /// The service an API host belongs to, for the local gateway.
+    pub(crate) fn api_target(&self, host: &str) -> Option<Target> {
+        self.target_where(|s| s.api_hosts.iter().any(|h| h.eq_ignore_ascii_case(host)))
+    }
+
+    fn target_where(&self, matches: impl Fn(&riot_api::MonitoredService) -> bool) -> Option<Target> {
         let state = self.state.read().unwrap();
         let policy = state.config.as_ref()?.active_policy()?;
-        let service = policy.services.iter().find(|s| {
-            s.desktop_apps.iter().any(|a| a.platform == PLATFORM && a.bundle_id.as_deref() == Some(bundle_id))
-        })?;
+        let service = policy.services.iter().find(|s| matches(s))?;
         let categories: BTreeMap<String, bool> =
             policy.data_types.iter().map(|d| (d.data_type.clone(), d.enabled)).collect();
         Some(Target {
@@ -308,6 +317,24 @@ impl Agent {
         self.queue_report(report);
         let _ = self.events.send(Event::StateChanged);
         Ok(())
+    }
+
+    /// The local gateway redacted values out of a request: reported at once, the request is
+    /// on its way. `detections` holds only what this request redacted for the first time.
+    pub(crate) fn report_api_redaction(&self, target: &Target, detections: &[Detection]) {
+        let event_id = Uuid::new_v4();
+        let types = type_counts(detections);
+        let counts = types.iter().map(|t| SnapshotDetection { kind: t.flag.clone(), count: t.count }).collect();
+        self.queue_report(SensitiveDataReport {
+            session_id: event_id,
+            service_id: target.service_id.clone(),
+            occurred_at: Utc::now(),
+            authorization_status: None,
+            text: Some(TextSnapshot { detections: counts, redacted: true }),
+            files: None,
+        });
+        push_recent(&mut self.state.write().unwrap(), event_id.to_string(), "textRedacted", &target.app_name, &types);
+        let _ = self.events.send(Event::StateChanged);
     }
 
     // ---------- files ----------

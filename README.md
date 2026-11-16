@@ -29,7 +29,7 @@ Why Rust, QuickJS and native apps: [docs/stack-choices.md](docs/stack-choices.md
 | `core/riot-detect`                   | QuickJS host: `redact` (numbered tokens per app), `detokenize`, `detect`, `scan_bytes`/`scan_path`, deadlines via the interrupt handler |
 | `core/riot-api`                      | parrot client (`docs/parrot-agent-api.md`)                                                                                              |
 | `core/riot-ipc`                      | local protocol types + blocking client                                                                                                  |
-| `core/riot-daemon`                   | the daemon (`riot-daemon`) and a CLI (`riotctl`)                                                                                        |
+| `core/riot-daemon`                   | the daemon (`riot-daemon`), its local API gateway (`src/gateway/`), and a CLI (`riotctl`)                                               |
 | `apple/RiotAgent`                    | menu bar app (SwiftPM): popup, clipboard guard, HUD, installer                                                                          |
 | `apple/RiotES`                       | Endpoint Security system extension                                                                                                      |
 | `apple/build-app.sh`, `build-pkg.sh` | `Riot.app` and the MDM `.pkg`                                                                                                           |
@@ -199,6 +199,13 @@ ES deadline ─► budget (Swift: semaphore + call timeout)
             ─► Instant (daemon)
             ─► AtomicU64 read by QuickJS's interrupt handler
 ```
+
+## Network interception
+
+Redacting at the network level instead (text typed in the app included): the measurements on
+Claude Code, Codex, Claude Desktop and ChatGPT, the plan, and the local gateway that already
+redacts Claude Code's API requests (`ANTHROPIC_BASE_URL=http://127.0.0.1:7591/anthropic`):
+[docs/network-interception.md](docs/network-interception.md).
 
 ## Not done / open
 

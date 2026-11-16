@@ -16,11 +16,17 @@ path = "src/bin/riotctl.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+bytes = { workspace = true }
 chrono = { workspace = true }
+futures-util = { workspace = true }
 hex = { workspace = true }
 hostname = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 libc = { workspace = true }
 plist = { workspace = true }
+reqwest = { workspace = true, features = ["stream"] }
 riot-api = { workspace = true }
 riot-detect = { workspace = true }
 riot-ipc = { workspace = true }

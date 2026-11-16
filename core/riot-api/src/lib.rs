@@ -110,6 +110,10 @@ pub struct MonitoredService {
     /// New for the agent: the native apps of this service, per platform.
     #[serde(default)]
     pub desktop_apps: Vec<DesktopApp>,
+    /// New for the agent: the API hosts of this service that the local gateway redacts
+    /// requests to, e.g. `api.anthropic.com`.
+    #[serde(default)]
+    pub api_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

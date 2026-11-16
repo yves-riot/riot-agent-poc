@@ -76,6 +76,13 @@ extension's `browser_extension_sensitive_data_monitoring` policy unchanged (`ena
 | `team_id` | signing team, to check before trusting a bundle id (ES side, later) |
 | `executable_prefixes` | ES extension: the processes whose file opens are checked (app + helpers) |
 
+It also gains an optional `api_hosts`: the API hosts the local gateway redacts requests to
+([network-interception.md](network-interception.md#local-gateway)).
+
+```json
+"api_hosts": ["api.anthropic.com"]
+```
+
 Catalog values seen on a real Mac (Nov 2026): ChatGPT is `com.openai.codex`, Claude Desktop is
 `com.anthropic.claudefordesktop`. The catalog lives next to the extension's
 (`browser_extension_sensitive_data_monitoring_services.ex`).

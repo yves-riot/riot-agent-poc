@@ -39,6 +39,16 @@ impl Paths {
     }
 }
 
+/// The local API gateway's address (`RIOT_GATEWAY_ADDR` overrides it). Loopback only: it
+/// forwards with the caller's own credentials and never needs to be reachable from elsewhere.
+pub const GATEWAY_ADDR: &str = "127.0.0.1:7591";
+
+pub fn gateway_addr() -> anyhow::Result<std::net::SocketAddr> {
+    let addr: std::net::SocketAddr = std::env::var("RIOT_GATEWAY_ADDR").as_deref().unwrap_or(GATEWAY_ADDR).parse()?;
+    anyhow::ensure!(addr.ip().is_loopback(), "the gateway listens on loopback only, not {addr}");
+    Ok(addr)
+}
+
 /// Reads a plist (the managed-preferences format) or, for development, a JSON file with the
 /// same keys. `Ok(None)` when the file does not exist: the profile is not installed yet.
 pub fn load_settings(path: &Path) -> anyhow::Result<Option<ManagedSettings>> {
