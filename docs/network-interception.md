@@ -373,6 +373,9 @@ payload installs from a manual profile.
   app-server` is claimed by team id; its Responses WebSocket to `chatgpt.com` is decrypted and
   rewritten; `ab.chatgpt.com`, `auth.openai.com` and the `oaiusercontent.com` CDNs are
   tunnelled.
+- **Both**, with a prompt holding an email and an IBAN, checked with a `debug-redaction`
+  daemon (below): each value left as its token in every request that carried it, none left in
+  clear, and each token of the answer was restored; the app showed the real values.
 - **False positives** in the apps' own prompts, as names: "Claude Code", "Claude Opus",
   "Claude Agent", spans such as "Claude Tag (Claude" or a whole Markdown link to
   `claude.com/claude-code`, "mark specs"; in Codex's, "Atkinson Hyperlegible Next" (a font)
@@ -383,4 +386,13 @@ payload installs from a manual profile.
 
 To check: the ChatGPT app (its title request, `ws.chatgpt.com`), Claude Desktop (step 4), the
 fallback from QUIC, and the daemon down.
+
+### Seeing the values (development builds)
+
+`cargo build -p riot-daemon --features debug-redaction` logs, under
+`riot_daemon::debug_redaction`, each token in a text as it is sent with the value it stands
+for (`sent`), any detected value still in that text (`sent in clear`, an error), and each token
+of a response with the value given back (`restored`). Without the feature (the default, and
+`apple/build-app.sh`), the code is not in the binary. A text served from the gateway's cache
+(already seen in the conversation) is not logged again.
 

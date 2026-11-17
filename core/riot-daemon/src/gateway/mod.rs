@@ -19,6 +19,8 @@
 
 mod anthropic;
 mod ca;
+#[cfg(feature = "debug-redaction")]
+mod debug_redaction;
 mod recording;
 mod responses;
 mod sse;
@@ -107,6 +109,8 @@ pub async fn serve(agent: Arc<Agent>, addr: SocketAddr) -> anyhow::Result<()> {
         tcp_connect,
         "gateway listening"
     );
+    #[cfg(feature = "debug-redaction")]
+    debug_redaction::warn_enabled();
     let gateway = Gateway::new(agent, upstreams, Some(authority), tcp_connect)?;
     if let Some(flows) = flows {
         tokio::spawn(gateway.clone().run_flows(flows));
@@ -571,7 +575,12 @@ fn scope(service_id: &str, headers: &HeaderMap) -> String {
 }
 
 fn resolver<'a>(engine: &'a Engine, scope: &'a str) -> impl FnMut(&str) -> Option<String> + 'a {
-    move |token| engine.detokenize(token, scope).ok().filter(|d| d.replaced > 0).map(|d| d.text)
+    move |token| {
+        let value = engine.detokenize(token, scope).ok().filter(|d| d.replaced > 0).map(|d| d.text);
+        #[cfg(feature = "debug-redaction")]
+        debug_redaction::restored(token, value.as_deref());
+        value
+    }
 }
 
 fn redact_cached(
@@ -593,6 +602,8 @@ fn redact_cached(
     if out.oversized {
         return Err(GatewayError::Blocked(format!("a text in the request is over {} MiB", MAX_TEXT_BYTES / 1_048_576)));
     }
+    #[cfg(feature = "debug-redaction")]
+    debug_redaction::sent(engine, scope, &out);
     detections.extend(out.detections);
     cache.lock().unwrap().put(key, out.text.clone());
     Ok(out.text)

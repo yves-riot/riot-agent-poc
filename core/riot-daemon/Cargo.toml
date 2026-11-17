@@ -14,6 +14,10 @@ path = "src/main.rs"
 name = "riotctl"
 path = "src/bin/riotctl.rs"
 
+[features]
+# Logs redacted and restored values: development builds only, never one that ships.
+debug-redaction = []
+
 [dependencies]
 anyhow = { workspace = true }
 bytes = { workspace = true }
