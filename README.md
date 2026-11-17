@@ -40,11 +40,11 @@ Why Rust, QuickJS and native apps: [docs/stack-choices.md](docs/stack-choices.md
 
 Needs Rust, Node + pnpm, Xcode (for the SwiftUI macros), and a checkout of
 `tryriot/riot-browser-extension` on branch `feat/shared-sonar-packages` (`SONAR_PACKAGES_DIR`,
-default `~/dev/riot/riot-browser-extension-pkgs/packages`):
+default `~/dev/riot/riot-browser-extension/packages`):
 
 ```sh
 git clone -b feat/shared-sonar-packages git@github.com:tryriot/riot-browser-extension.git \
-  ~/dev/riot/riot-browser-extension-pkgs
+  ~/dev/riot/riot-browser-extension
 (cd js && pnpm install && node build.mjs)
 dev/run-dev.sh                                   # stub parrot + daemon, unprivileged
 apple/build-app.sh                               # → apple/build/Riot.app (ad-hoc signed)

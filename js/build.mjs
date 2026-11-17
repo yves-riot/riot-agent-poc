@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packagesDir = resolve(
-  process.env.SONAR_PACKAGES_DIR ?? join(homedir(), 'dev/riot/riot-browser-extension-pkgs/packages'),
+  process.env.SONAR_PACKAGES_DIR ?? join(homedir(), 'dev/riot/riot-browser-extension/packages'),
 );
 const detectionDir = join(packagesDir, 'sonar-detection');
 const guardCoreDir = join(packagesDir, 'sonar-guard-core');

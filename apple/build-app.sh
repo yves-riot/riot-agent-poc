@@ -5,7 +5,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/.." && pwd)
-packages=${SONAR_PACKAGES_DIR:-$HOME/dev/riot/riot-browser-extension-pkgs/packages}
+packages=${SONAR_PACKAGES_DIR:-$HOME/dev/riot/riot-browser-extension/packages}
 # Xcode (SwiftUI macros) for the Swift steps only. Cargo must see the same environment as
 # `dev/run-dev.sh` and `cargo test`: the C crates (aws-lc-sys, rquickjs-sys) rebuild, with
 # everything above them, whenever DEVELOPER_DIR changes (about 5 min).
