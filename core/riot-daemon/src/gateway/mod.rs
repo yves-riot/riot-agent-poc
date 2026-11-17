@@ -539,24 +539,26 @@ impl Api {
 }
 
 /// A request body as the client encoded it (Codex compresses with zstd when it falls back from
-/// its WebSocket to HTTPS). Another encoding cannot be checked: the request is refused.
+/// its WebSocket to HTTPS, Claude Code some requests with gzip). Another encoding cannot be
+/// checked: the request is refused.
 fn decoded(encoding: Option<HeaderValue>, body: Bytes) -> Result<Bytes, GatewayError> {
     use std::io::Read;
     let encoding = encoding.as_ref().and_then(|v| v.to_str().ok()).map(str::to_ascii_lowercase);
-    match encoding.as_deref() {
-        None | Some("identity") => Ok(body),
-        Some("zstd") => {
-            let mut out = vec![];
-            zstd::stream::read::Decoder::new(&body[..])
-                .and_then(|d| d.take(MAX_REQUEST_BYTES as u64 + 1).read_to_end(&mut out))
-                .map_err(|e| GatewayError::Blocked(format!("the zstd request body could not be read: {e}")))?;
-            if out.len() > MAX_REQUEST_BYTES {
-                return Err(GatewayError::Blocked(format!("the request is over {} MiB", MAX_REQUEST_BYTES / 1_048_576)));
-            }
-            Ok(out.into())
-        }
-        Some(other) => Err(GatewayError::Blocked(format!("{other}-compressed request bodies cannot be checked"))),
+    let decoder: Box<dyn Read + '_> = match encoding.as_deref() {
+        None | Some("identity") => return Ok(body),
+        Some("zstd") => Box::new(zstd::stream::read::Decoder::new(&body[..]).map_err(|e| GatewayError::Blocked(format!("the zstd request body could not be read: {e}")))?),
+        Some("gzip" | "x-gzip") => Box::new(flate2::read::GzDecoder::new(&body[..])),
+        Some(other) => return Err(GatewayError::Blocked(format!("{other}-compressed request bodies cannot be checked"))),
+    };
+    let mut out = vec![];
+    decoder
+        .take(MAX_REQUEST_BYTES as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| GatewayError::Blocked(format!("the compressed request body could not be read: {e}")))?;
+    if out.len() > MAX_REQUEST_BYTES {
+        return Err(GatewayError::Blocked(format!("the request is over {} MiB", MAX_REQUEST_BYTES / 1_048_576)));
     }
+    Ok(out.into())
 }
 
 /// Token memory is per credential: the gateway cannot tell which local user a TCP connection
@@ -1086,8 +1088,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_zstd_responses_request_over_https_is_redacted() {
-        let agent = agent("zstd", &["chatgpt.com"]);
+    async fn a_compressed_responses_request_over_https_is_redacted() {
+        use std::io::Write;
+        let agent = agent("compressed", &["chatgpt.com"]);
         let (upstream, seen) = fake_responses_sse().await;
         let (proxy, root) = proxy(agent.clone(), upstream).await;
         let client = reqwest::Client::builder()
@@ -1097,27 +1100,32 @@ mod tests {
             .unwrap();
         let text = format!("Mail {MAIL}, IBAN {IBAN}.");
         let create = json!({ "model": "m", "stream": true, "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": text }] }] });
-        let sse = client
-            .post("https://chatgpt.com/backend-api/codex/responses")
-            .header("authorization", "Bearer test")
-            .header(header::CONTENT_ENCODING, "zstd")
-            .body(zstd::encode_all(create.to_string().as_bytes(), 3).unwrap())
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        let answer: String = sse
-            .split("\n\n")
-            .filter_map(|e| e.lines().find_map(|l| l.strip_prefix("data: ")))
-            .map(|d| serde_json::from_str::<Value>(d).unwrap()["delta"].as_str().unwrap().to_owned())
-            .collect();
-        assert_eq!(answer, text);
-        let (encoding, sent) = seen.lock().unwrap()[0].clone();
-        assert_eq!(encoding, None, "sent on uncompressed");
-        let sent = sent.to_string();
-        assert!(!sent.contains(MAIL) && sent.contains("[EMAIL"), "upstream saw: {sent}");
+        let plain = create.to_string();
+        let mut gzip = flate2::write::GzEncoder::new(vec![], flate2::Compression::default());
+        gzip.write_all(plain.as_bytes()).unwrap();
+        for (i, (encoding, body)) in [("zstd", zstd::encode_all(plain.as_bytes(), 3).unwrap()), ("gzip", gzip.finish().unwrap())].into_iter().enumerate() {
+            let sse = client
+                .post("https://chatgpt.com/backend-api/codex/responses")
+                .header("authorization", "Bearer test")
+                .header(header::CONTENT_ENCODING, encoding)
+                .body(body)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            let answer: String = sse
+                .split("\n\n")
+                .filter_map(|e| e.lines().find_map(|l| l.strip_prefix("data: ")))
+                .map(|d| serde_json::from_str::<Value>(d).unwrap()["delta"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(answer, text, "{encoding}");
+            let (sent_encoding, sent) = seen.lock().unwrap()[i].clone();
+            assert_eq!(sent_encoding, None, "{encoding}: sent on uncompressed");
+            let sent = sent.to_string();
+            assert!(!sent.contains(MAIL) && sent.contains("[EMAIL"), "{encoding}: upstream saw: {sent}");
+        }
 
         // An encoding the gateway cannot read is refused, not passed on.
         let refused = client
@@ -1128,6 +1136,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
-        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(seen.lock().unwrap().len(), 2);
     }
 }

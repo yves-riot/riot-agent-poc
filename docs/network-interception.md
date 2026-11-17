@@ -367,7 +367,8 @@ payload installs from a manual profile.
 - **Claude Code** (2.1.326, logged in, no `HTTPS_PROXY`): its flows to `api.anthropic.com`
   are claimed by team id, decrypted and redacted; its other hosts (`mcp-proxy.anthropic.com`,
   Datadog, `downloads.claude.ai`) are tunnelled. A flow to a bare IPv6 address was routed by
-  its ClientHello to `api.anthropic.com` and decrypted.
+  its ClientHello to `api.anthropic.com` and decrypted. One `/v1/messages` request came with a
+  gzip body, which the gateway now decodes as it does zstd.
 - **Codex CLI** (0.169.0, logged in, without `--no-daemon`): the launchd-started `codex
   app-server` is claimed by team id; its Responses WebSocket to `chatgpt.com` is decrypted and
   rewritten; `ab.chatgpt.com`, `auth.openai.com` and the `oaiusercontent.com` CDNs are
