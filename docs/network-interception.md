@@ -22,7 +22,8 @@ open: it also covers text typed in the app, and every way into it at once.
   [Local gateway](#local-gateway).
 - The gateway's protocol adapters do not depend on how traffic reaches them. Until the
   transparent proxy exists, the gateway is also an `HTTPS_PROXY` for development, which
-  terminates TLS the same way: [TLS termination](#tls-termination-https_proxy-entry).
+  terminates TLS the same way: [TLS termination](#tls-termination-https_proxy-entry). Behind
+  it, the Responses API adapter covers Codex: [Responses API](#responses-api-codex-chatgpt).
 
 ## Measurements (Nov 2026, macOS 27.2)
 
@@ -39,10 +40,14 @@ mitmproxy and a throwaway CA, removed afterwards. Versions: Claude Code 2.1.325,
 
 ### Findings
 
-1. **Interception has to be per process, descendants included.** ChatGPT's conversation left
-   directly while the app itself went through the proxy: the request is made by a child process
-   (`Contents/Resources/codex-cli/CodexCLI.app`). The transparent proxy must match the app and
-   its descendants, as RiotES does.
+1. **Interception has to be per process, descendants included, and by signature.** ChatGPT's
+   conversation left directly while the app itself went through the proxy: the request is made
+   by a child process (`Contents/Resources/codex-cli/CodexCLI.app`). The interactive Codex CLI
+   goes further: it hands the conversation over a Unix socket to a background
+   `codex app-server --managed-daemon` (in `~/.codex/packages/app-server-daemon/`, launched by
+   launchd, not a descendant of the terminal), which calls the API itself. Only the signature
+   (team `2DC432GLL2`) ties it to OpenAI: the transparent proxy must match signing team ids, as
+   RiotES does, not only process trees.
 2. **One CA in the keychain covers every client measured**, Claude Code included (2.1.326). No
    client pinned.
 3. **Three protocols, not one:**
@@ -82,7 +87,7 @@ history from disk (`~/.codex/sessions`), not from the network.
 3. Transparent proxy and TLS termination for the desktop apps, one protocol adapter at a time
    (Responses over WebSocket covers ChatGPT and Codex), scoped to the protected apps:
    1. TLS termination in the daemon, behind a development `HTTPS_PROXY` entry (done, below);
-   2. Responses over WebSocket (Codex CLI, then ChatGPT);
+   2. Responses over WebSocket (done for Codex CLI, below; the ChatGPT app is still to test);
    3. the `NETransparentProxyProvider` extension, which replaces the development entry;
    4. protobuf over Connect RPC (Claude Desktop).
 
@@ -144,19 +149,22 @@ or a compressed request body. An unreachable API is a `502`.
 
 ### Seeing what leaves the gateway
 
-`RIOT_GATEWAY_UPSTREAM` replaces `https://api.anthropic.com` with a loopback URL (anything else
-is refused: the gateway forwards the client's credentials). Put mitmproxy there in reverse mode,
-no certificate needed:
+`RIOT_GATEWAY_UPSTREAM` replaces `https://<host>` with a loopback URL, per host:
+comma-separated `host=url` entries (a bare URL applies to every host, which only suits a single
+API). Anything but loopback is refused: the gateway forwards the client's credentials. Put
+mitmproxy there, one reverse mode per API host, no certificate needed:
 
 ```sh
-mitmweb --mode reverse:https://api.anthropic.com@18081        # UI on http://127.0.0.1:8081
-RIOT_GATEWAY_UPSTREAM=http://127.0.0.1:18081 dev/run-dev.sh
+mitmweb --mode reverse:https://api.anthropic.com@127.0.0.1:18081 \
+        --mode reverse:https://chatgpt.com@127.0.0.1:18082          # UI on http://127.0.0.1:8081
+RIOT_GATEWAY_UPSTREAM=api.anthropic.com=http://127.0.0.1:18081,chatgpt.com=http://127.0.0.1:18082 \
+  dev/run-dev.sh
 ANTHROPIC_BASE_URL=http://127.0.0.1:7591/anthropic claude
 ```
 
 The `POST /v1/messages` request holds tokens (`[EMAIL_2]`, `[IBAN_1]`) where Claude Code shows
-the values, and so does the raw answer. mitmweb also shows the `Authorization` header: do not
-share its screens.
+the values, and so does the raw answer. mitmweb also shows the `Authorization` header (and
+ChatGPT's `chatgpt-account-id`): do not share its screens.
 
 ### Measured (Claude Code 2.1.325, Haiku)
 
@@ -178,7 +186,8 @@ share its screens.
 - An OAuth token refresh changes the scope: the history is redacted and reported again once.
 - Tokens written markdown-escaped (`\[EMAIL\_1\]`) are not detokenized in the stream.
 - The engine has one thread: a large first request delays concurrent pastes and file scans.
-- No WebSocket upgrade, and only the Anthropic API so far (`/anthropic`).
+- The base URL entry only knows the Anthropic API (`/anthropic`); the Responses API goes through
+  the `HTTPS_PROXY` entry.
 - **Nothing is protected before the first policy sync.** The daemon keeps the policy in memory
   only: after a restart, until parrot answers, no host is redacted and CONNECTs are tunnelled
   untouched (measured: a Claude Code request started with the daemon went out unredacted). The
@@ -230,3 +239,78 @@ the same for every device, while its key must not be shared by every device. One
 per organization, kept by parrot, in the MDM profile; each daemon generates its key, sends a
 CSR, and gets back an intermediate CA, name-constrained to the AI domains, whose key never
 leaves the Mac.
+
+## Responses API (Codex, ChatGPT)
+
+`core/riot-daemon/src/gateway/responses.rs` and `websocket.rs`. On a host the policy lists
+(`chatgpt.com` for the `openai` service in the stub), any path ending in `/responses` is
+rewritten: Codex's WebSocket (`GET /backend-api/codex/responses`, upgraded) and its HTTPS
+transport (`POST`, SSE). Other WebSockets on the host are relayed message by message, untouched.
+
+```sh
+HTTPS_PROXY=http://127.0.0.1:7591 SSL_CERT_FILE=<system roots + gateway-ca.pem> codex --no-daemon
+```
+
+`--no-daemon` keeps the conversation in the CLI process: otherwise it goes through the
+background app-server daemon (finding 1), which never saw these variables. `codex exec` runs in
+process.
+
+(`SSL_CERT_FILE` replaces Codex's roots: build it from
+`security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain` and
+the Riot CA. With the CA in the keychain, nothing is needed.)
+
+**WebSocket.** The handshake goes upstream with the client's headers, so the upstream's
+`Sec-WebSocket-Accept` answers the client's key; `Sec-WebSocket-Extensions` is dropped, so no
+compression is negotiated and every message can be read. A refused handshake (`401`…) is
+relayed as is. Pings are answered on each side; binary messages from the client are dropped
+(none seen: they could not be checked).
+
+**What is redacted.** In each `response.create` (a WebSocket message, or the HTTP body):
+`instructions` and every string of `input`, walked generically so that item types Codex adds
+later are covered, except under keys that hold identifiers or opaque data (`id`, `call_id`,
+`role`, `name`, `encrypted_content`, `internal_chat_message_metadata_passthrough`, image and
+file data…). `additional_tools` items (tool definitions) are skipped. A function call's
+`arguments` is JSON in a string: each string inside is redacted, and it is re-serialized only
+when something changed. Other client messages pass as they are (only `response.create` seen).
+
+With `previous_response_id`, Codex sends only the new items (the user's message, tool outputs);
+the rest of the conversation stays on the server, which only ever saw tokens.
+
+**What is detokenized.** Every `*.delta` event goes through a detokenizer of its own (by type,
+item and part); any other event of the same item flushes what it held back first, as a delta.
+Every other event has its tokens replaced in every string, so the full text is fixed wherever
+it comes back (`output_text.done`, `content_part.done`, `output_item.done`,
+`response.completed`). Function call arguments are JSON-escaped; the input of a freeform tool
+(`exec`, whose input is JavaScript code; patches) is written as is.
+
+**Refusals.** A request that cannot be checked gets, instead of being sent,
+`{"type":"error","status":400,"error":{"code":"riot_blocked","message":…}}`, which Codex shows
+as a final error. A `response.failed` was tried first: Codex took it for a broken stream,
+retried five times, then fell back to HTTPS.
+
+**HTTPS transport.** Codex compresses that request body with zstd: the gateway decompresses it
+(32 MiB at most), sends it on uncompressed, and refuses any other encoding. The SSE answer has
+no `Content-Type`: on a rewritten path, a response without one is read as SSE (anything that is
+not an event passes unchanged).
+
+### Measured (Codex CLI 0.167.0)
+
+- Asked for its email, its IBAN, `echo` of the email and the email backwards: the model wrote
+  `]1_LIAME[`, the `exec` tool ran `echo 'jean.dupont@example.com'`, and Codex printed the real
+  values. Upstream (mitmproxy behind the gateway), no message held the email or the IBAN.
+- The first `response.create` of a session is 88 KB (Codex's prompt as developer messages);
+  4.2 s to redact in a debug build, then only new texts.
+- Same answer over the HTTPS transport (a provider with `supports_websockets = false`).
+- The other requests to `chatgpt.com` (plugins, MCP, `analytics-events`) are forwarded as is: in
+  these runs none held the email.
+
+### Limits
+
+- A false positive in Codex's own prompt: a numeric directory in skill paths
+  (`spreadsheets/<number>/skills`) becomes `[PHONE_1]`. A command the model writes with it is
+  detokenized before it runs.
+- A value written into the `exec` tool's code is inserted as is: one holding a quote would break
+  the string literal around it.
+- The ChatGPT app is not tested yet: its title-generation request (finding 5) and its own
+  WebSocket hosts (`ws.chatgpt.com`) are still to look at.
+

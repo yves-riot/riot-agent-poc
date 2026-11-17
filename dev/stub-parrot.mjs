@@ -26,6 +26,7 @@ const policy = () => ({
       domain: 'chatgpt.com', domains: ['https://chatgpt.com/*'], excluded_domains: [], account_detection: null,
       desktop_apps: [{ platform: 'macos', bundle_id: 'com.openai.codex', team_id: '2DC432GLL2',
         executable_prefixes: ['/Applications/ChatGPT.app/'] }],
+      api_hosts: ['chatgpt.com'],
     },
     {
       service_id: 'anthropic', display_name: 'Claude', authorized: false, logo_url: null,

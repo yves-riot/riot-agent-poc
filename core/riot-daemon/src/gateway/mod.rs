@@ -3,6 +3,10 @@
 //! TLS. Requests to a host the policy lists (`api_hosts`) are redacted on the way out and their
 //! answers detokenized on the way back; everything else passes through untouched.
 //!
+//! Two API formats are rewritten, by path: Anthropic Messages ([`anthropic`], JSON and SSE) and
+//! OpenAI Responses ([`responses`], over a WebSocket ([`websocket`]) or SSE, as Codex and the
+//! ChatGPT app use it).
+//!
 //! No certificate is involved: the client speaks plain HTTP to loopback. Bodies and headers are
 //! never logged, they carry prompts and credentials.
 //!
@@ -13,7 +17,10 @@
 
 mod anthropic;
 mod ca;
+mod responses;
+mod sse;
 mod tokens;
+mod websocket;
 
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
@@ -57,48 +64,93 @@ pub struct Gateway {
     agent: Arc<Agent>,
     client: reqwest::Client,
     cache: Mutex<Cache>,
-    /// Replaces `https://<host>`: a local server in tests, or `RIOT_GATEWAY_UPSTREAM` to put an
-    /// inspecting proxy between the gateway and the API.
-    upstream_base: Option<String>,
+    upstreams: Upstreams,
     /// Set when the `HTTPS_PROXY` entry is on.
     authority: Option<Arc<Authority>>,
 }
 
 pub async fn serve(agent: Arc<Agent>, addr: SocketAddr) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
-    let upstream = upstream_override()?;
+    let upstreams = Upstreams::from_env()?;
     let authority = match std::env::var_os("RIOT_DEV_PROXY").is_some_and(|v| v == "1") {
         true => Some(Arc::new(Authority::load_or_create(&agent.paths.data_dir)?)),
         false => None,
     };
     tracing::info!(
         %addr,
-        upstream = upstream.as_deref().unwrap_or("https://<api host>"),
+        upstream = %upstreams,
         proxy_ca = authority.as_ref().map(|a| a.cert_path().display().to_string()),
         "gateway listening"
     );
-    Gateway::new(agent, upstream, authority)?.run(listener).await
+    Gateway::new(agent, upstreams, authority)?.run(listener).await
 }
 
-/// `RIOT_GATEWAY_UPSTREAM`, for development: e.g. `http://127.0.0.1:18081`, a mitmproxy in
-/// reverse mode, to see exactly what leaves the gateway. Loopback only: the gateway forwards the
-/// client's credentials, and they must not be sent anywhere else.
-fn upstream_override() -> anyhow::Result<Option<String>> {
-    let Ok(base) = std::env::var("RIOT_GATEWAY_UPSTREAM") else { return Ok(None) };
-    let url = reqwest::Url::parse(&base)?;
-    let host = url.host_str().unwrap_or_default().trim_start_matches('[').trim_end_matches(']');
-    let loopback = host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
-    anyhow::ensure!(loopback, "RIOT_GATEWAY_UPSTREAM must be a loopback URL, not {base}");
-    Ok(Some(base.trim_end_matches('/').to_owned()))
+/// Where requests for an API host go instead of `https://<host>`: a local server in tests, or
+/// an inspecting proxy between the gateway and the API (`RIOT_GATEWAY_UPSTREAM`).
+#[derive(Debug, Default)]
+struct Upstreams {
+    /// For every host.
+    any: Option<String>,
+    by_host: HashMap<String, String>,
+}
+
+impl Upstreams {
+    #[cfg(test)]
+    fn any(base: String) -> Self {
+        Self { any: Some(base), by_host: HashMap::new() }
+    }
+
+    /// `RIOT_GATEWAY_UPSTREAM`, for development: comma-separated `host=url` entries, one per
+    /// mitmproxy reverse mode (`api.anthropic.com=http://127.0.0.1:18081,chatgpt.com=…:18082`);
+    /// a bare URL applies to every host. Loopback only: the gateway forwards the client's
+    /// credentials, and they must not be sent anywhere else.
+    fn from_env() -> anyhow::Result<Self> {
+        let Ok(value) = std::env::var("RIOT_GATEWAY_UPSTREAM") else { return Ok(Self::default()) };
+        Self::parse(&value)
+    }
+
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        let mut out = Self::default();
+        for entry in value.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+            let (host, base) = match entry.split_once('=') {
+                Some((host, base)) => (Some(host.trim().to_ascii_lowercase()), base.trim()),
+                None => (None, entry),
+            };
+            let url = reqwest::Url::parse(base)?;
+            let name = url.host_str().unwrap_or_default().trim_start_matches('[').trim_end_matches(']');
+            let loopback = name == "localhost" || name.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback());
+            anyhow::ensure!(loopback, "RIOT_GATEWAY_UPSTREAM must hold loopback URLs, not {base}");
+            let base = base.trim_end_matches('/').to_owned();
+            match host {
+                Some(host) => out.by_host.insert(host, base),
+                None => out.any.replace(base),
+            };
+        }
+        Ok(out)
+    }
+
+    fn base(&self, host: &str) -> String {
+        let host = host.to_ascii_lowercase();
+        self.by_host.get(&host).or(self.any.as_ref()).cloned().unwrap_or_else(|| format!("https://{host}"))
+    }
+}
+
+impl std::fmt::Display for Upstreams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut entries: Vec<String> = self.by_host.iter().map(|(h, b)| format!("{h}={b}")).collect();
+        entries.sort();
+        entries.push(format!("*={}", self.any.as_deref().unwrap_or("https://<host>")));
+        f.write_str(&entries.join(","))
+    }
 }
 
 impl Gateway {
-    fn new(agent: Arc<Agent>, upstream_base: Option<String>, authority: Option<Arc<Authority>>) -> anyhow::Result<Arc<Self>> {
+    fn new(agent: Arc<Agent>, upstreams: Upstreams, authority: Option<Arc<Authority>>) -> anyhow::Result<Arc<Self>> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .build()?;
-        Ok(Arc::new(Self { agent, client, cache: Mutex::new(Cache::default()), upstream_base, authority }))
+        Ok(Arc::new(Self { agent, client, cache: Mutex::new(Cache::default()), upstreams, authority }))
     }
 
     async fn run(self: Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
@@ -126,7 +178,7 @@ impl Gateway {
     }
 
     /// `origin` is the host a decrypted CONNECT tunnel leads to; `None` on the base URL entry.
-    async fn handle_request(&self, req: Request<Incoming>, origin: Option<Arc<str>>) -> Response<Body> {
+    async fn handle_request(self: Arc<Self>, req: Request<Incoming>, origin: Option<Arc<str>>) -> Response<Body> {
         let (method, path) = (req.method().clone(), req.uri().path().to_owned());
         let started = Instant::now();
         let result = match &origin {
@@ -178,12 +230,12 @@ impl Gateway {
             let (gateway, host) = (self.clone(), host.clone());
             async move { Ok::<_, Infallible>(gateway.handle_request(req, Some(host)).await) }
         });
-        hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls), service).await?;
+        hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls), service).with_upgrades().await?;
         Ok(())
     }
 
     /// The base URL entry: `/anthropic/v1/messages` → `api.anthropic.com`, `/v1/messages`.
-    async fn forward(&self, req: Request<Incoming>) -> Result<Response<Body>, GatewayError> {
+    async fn forward(self: &Arc<Self>, req: Request<Incoming>) -> Result<Response<Body>, GatewayError> {
         let (prefix, rest) = req.uri().path().trim_start_matches('/').split_once('/').ok_or(GatewayError::NotFound)?;
         let host = UPSTREAMS.iter().find(|(p, _)| *p == prefix).map(|(_, h)| *h).ok_or(GatewayError::NotFound)?;
         let api_path = format!("/{rest}");
@@ -192,15 +244,27 @@ impl Gateway {
 
     /// Sends a request on to `host`, redacting it on the way out and detokenizing the answer
     /// when the policy protects that host.
-    async fn relay(&self, req: Request<Incoming>, host: &str, api_path: &str) -> Result<Response<Body>, GatewayError> {
-        let base = self.upstream_base.clone().unwrap_or_else(|| format!("https://{host}"));
+    async fn relay(self: &Arc<Self>, req: Request<Incoming>, host: &str, api_path: &str) -> Result<Response<Body>, GatewayError> {
+        let base = self.upstreams.base(host);
         let url = match req.uri().query() {
             Some(q) => format!("{base}{api_path}?{q}"),
             None => format!("{base}{api_path}"),
         };
-
         let target = self.agent.api_target(host);
-        let rewrite = target.is_some() && req.method() == Method::POST && anthropic::is_messages_path(api_path);
+        let api = Api::for_path(api_path);
+        if websocket::is_upgrade(&req) {
+            let hooks = match (target, api) {
+                (Some(target), Some(Api::Responses)) => {
+                    let scope = scope(&target.service_id, req.headers());
+                    self.responses_hooks(target, scope)
+                }
+                _ => websocket::Hooks::passthrough(),
+            };
+            return websocket::relay(req, &url, hooks).await;
+        }
+
+        let rewrite = target.is_some() && req.method() == Method::POST && api.is_some();
+        let api = api.unwrap_or(Api::Messages);
         let method = req.method().clone();
         let mut headers = forwarded_headers(req.headers());
         let scope = target.as_ref().map(|t| scope(&t.service_id, req.headers()));
@@ -213,12 +277,10 @@ impl Gateway {
 
         let body = match (&target, &scope) {
             (Some(target), Some(scope)) if rewrite => {
-                if headers.get(header::CONTENT_ENCODING).is_some_and(|v| v != "identity") {
-                    return Err(GatewayError::Blocked("compressed request bodies cannot be checked".into()));
-                }
-                // Responses must come back uncompressed to be detokenized.
+                // Sent on uncompressed; responses must come back uncompressed to be detokenized.
+                let body = decoded(headers.remove(header::CONTENT_ENCODING), body)?;
                 headers.remove(header::ACCEPT_ENCODING);
-                self.redact(body, target, scope).await?
+                self.redact(body, api, target, scope).await?
             }
             _ => body,
         };
@@ -238,14 +300,15 @@ impl Gateway {
         let encoded = upstream.headers().get(header::CONTENT_ENCODING).is_some_and(|v| v != "identity");
 
         let body: Body = match scope {
-            Some(scope) if rewrite && !encoded && content_type.starts_with("text/event-stream") => {
+            // `chatgpt.com/backend-api/codex/responses` streams SSE with no content type at all.
+            Some(scope) if rewrite && !encoded && (content_type.starts_with("text/event-stream") || content_type.is_empty()) => {
                 response_headers.remove(header::CONTENT_LENGTH);
-                self.detokenize_stream(upstream, scope)
+                self.detokenize_stream(upstream, api.sse_rewriter(), scope)
             }
             Some(scope) if rewrite && !encoded && content_type.starts_with("application/json") => {
                 response_headers.remove(header::CONTENT_LENGTH);
                 let bytes = upstream.bytes().await.map_err(|e| GatewayError::Upstream(e.to_string()))?;
-                full(self.detokenize_json(bytes, scope).await)
+                full(self.detokenize_json(bytes, api, scope).await)
             }
             _ => StreamBody::new(upstream.bytes_stream().map_ok(Frame::data).map_err(std::io::Error::other)).boxed_unsync(),
         };
@@ -255,32 +318,62 @@ impl Gateway {
         Ok(response)
     }
 
-    /// Redacts a Messages request; reports what it redacted for the first time.
-    async fn redact(&self, body: Bytes, target: &Target, scope: &str) -> Result<Bytes, GatewayError> {
+    /// Redacts a request body; reports what it redacted for the first time.
+    async fn redact(&self, body: Bytes, api: Api, target: &Target, scope: &str) -> Result<Bytes, GatewayError> {
         let mut json: Value =
             serde_json::from_slice(&body).map_err(|e| GatewayError::BadRequest(format!("the request is not JSON: {e}")))?;
-        let engine = self.agent.engine.clone();
-        let options = Options { max_bytes: Some(MAX_TEXT_BYTES), ..target.options.clone() };
-        let scope = scope.to_owned();
-        let started = Instant::now();
         // The engine call blocks on the JS thread.
-        let (json, detections) = tokio::task::block_in_place(|| {
-            let mut detections = vec![];
-            let mut redact =
-                |text: &str| redact_cached(&engine, &self.cache, &scope, &options, text, &mut detections);
-            anthropic::redact_request(&mut json, &mut redact).map(|()| (json, detections))
-        })?;
-        let ms = started.elapsed().as_millis() as u64;
-        tracing::info!(ms, bytes = body.len(), new_detections = detections.len(), "gateway redaction");
-        if !detections.is_empty() {
-            self.agent.report_api_redaction(target, &detections);
-        }
+        tokio::task::block_in_place(|| self.redact_json(&mut json, api, target, scope, body.len()))?;
         Ok(serde_json::to_vec(&json).map_err(|e| GatewayError::Blocked(e.to_string()))?.into())
     }
 
-    fn detokenize_stream(&self, upstream: reqwest::Response, scope: String) -> Body {
+    /// Blocking: calls the engine for every text not seen before in this scope.
+    fn redact_json(&self, json: &mut Value, api: Api, target: &Target, scope: &str, bytes: usize) -> Result<(), GatewayError> {
+        let options = Options { max_bytes: Some(MAX_TEXT_BYTES), ..target.options.clone() };
+        let started = Instant::now();
+        let mut detections = vec![];
+        let mut redact = |text: &str| redact_cached(&self.agent.engine, &self.cache, scope, &options, text, &mut detections);
+        match api {
+            Api::Messages => anthropic::redact_request(json, &mut redact)?,
+            Api::Responses => responses::redact_request(json, &mut redact)?,
+        }
+        let ms = started.elapsed().as_millis() as u64;
+        tracing::info!(?api, ms, bytes, new_detections = detections.len(), "gateway redaction");
+        if !detections.is_empty() {
+            self.agent.report_api_redaction(target, &detections);
+        }
+        Ok(())
+    }
+
+    /// A Responses WebSocket: each `response.create` is redacted (or refused, and the client
+    /// gets an `error` event instead), each event detokenized.
+    fn responses_hooks(self: &Arc<Self>, target: Target, scope: String) -> websocket::Hooks {
+        let gateway = self.clone();
         let engine = self.agent.engine.clone();
-        let state = (upstream.bytes_stream(), anthropic::SseRewriter::default());
+        let down_scope = scope.clone();
+        let mut events = responses::EventRewriter::default();
+        websocket::Hooks {
+            up: Box::new(move |text| {
+                let refuse = |e: GatewayError| e.error_event();
+                let mut json: Value =
+                    serde_json::from_str(text).map_err(|e| refuse(GatewayError::Blocked(format!("a message is not JSON: {e}"))))?;
+                if json.get("type").and_then(Value::as_str) != Some("response.create") {
+                    return Ok(text.to_owned());
+                }
+                gateway.redact_json(&mut json, Api::Responses, &target, &scope, text.len()).map_err(refuse)?;
+                Ok(json.to_string())
+            }),
+            down: Box::new(move |text| match serde_json::from_str::<Value>(text) {
+                Ok(event) => events.event(event, &mut resolver(&engine, &down_scope)).iter().map(Value::to_string).collect(),
+                Err(_) => vec![text.to_owned()],
+            }),
+            allow_binary_up: false,
+        }
+    }
+
+    fn detokenize_stream(&self, upstream: reqwest::Response, rewriter: Box<dyn sse::Rewrite>, scope: String) -> Body {
+        let engine = self.agent.engine.clone();
+        let state = (upstream.bytes_stream(), rewriter);
         let stream = futures_util::stream::unfold(Some(state), move |state| {
             let (engine, scope) = (engine.clone(), scope.clone());
             async move {
@@ -305,11 +398,66 @@ impl Gateway {
         StreamBody::new(stream).boxed_unsync()
     }
 
-    async fn detokenize_json(&self, bytes: Bytes, scope: String) -> Bytes {
+    async fn detokenize_json(&self, bytes: Bytes, api: Api, scope: String) -> Bytes {
         let Ok(mut json) = serde_json::from_slice::<Value>(&bytes) else { return bytes };
         let engine = self.agent.engine.clone();
-        tokio::task::block_in_place(|| anthropic::detokenize_response(&mut json, &mut resolver(&engine, &scope)));
+        tokio::task::block_in_place(|| {
+            let mut resolve = resolver(&engine, &scope);
+            match api {
+                Api::Messages => anthropic::detokenize_response(&mut json, &mut resolve),
+                Api::Responses => responses::detokenize_value(&mut json, &mut resolve),
+            }
+        });
         serde_json::to_vec(&json).map(Bytes::from).unwrap_or(bytes)
+    }
+}
+
+/// The API formats the gateway rewrites, by request path.
+#[derive(Debug, Clone, Copy)]
+enum Api {
+    /// Anthropic Messages (`/v1/messages`).
+    Messages,
+    /// OpenAI Responses (`/backend-api/codex/responses`, `/v1/responses`).
+    Responses,
+}
+
+impl Api {
+    fn for_path(path: &str) -> Option<Self> {
+        if anthropic::is_messages_path(path) {
+            Some(Self::Messages)
+        } else if responses::is_responses_path(path) {
+            Some(Self::Responses)
+        } else {
+            None
+        }
+    }
+
+    fn sse_rewriter(self) -> Box<dyn sse::Rewrite> {
+        match self {
+            Self::Messages => Box::new(anthropic::SseRewriter::default()),
+            Self::Responses => Box::new(responses::SseRewriter::default()),
+        }
+    }
+}
+
+/// A request body as the client encoded it (Codex compresses with zstd when it falls back from
+/// its WebSocket to HTTPS). Another encoding cannot be checked: the request is refused.
+fn decoded(encoding: Option<HeaderValue>, body: Bytes) -> Result<Bytes, GatewayError> {
+    use std::io::Read;
+    let encoding = encoding.as_ref().and_then(|v| v.to_str().ok()).map(str::to_ascii_lowercase);
+    match encoding.as_deref() {
+        None | Some("identity") => Ok(body),
+        Some("zstd") => {
+            let mut out = vec![];
+            zstd::stream::read::Decoder::new(&body[..])
+                .and_then(|d| d.take(MAX_REQUEST_BYTES as u64 + 1).read_to_end(&mut out))
+                .map_err(|e| GatewayError::Blocked(format!("the zstd request body could not be read: {e}")))?;
+            if out.len() > MAX_REQUEST_BYTES {
+                return Err(GatewayError::Blocked(format!("the request is over {} MiB", MAX_REQUEST_BYTES / 1_048_576)));
+            }
+            Ok(out.into())
+        }
+        Some(other) => Err(GatewayError::Blocked(format!("{other}-compressed request bodies cannot be checked"))),
     }
 }
 
@@ -400,9 +548,8 @@ enum GatewayError {
 }
 
 impl GatewayError {
-    /// An error in the Messages API's shape, so the client shows the message.
-    fn response(self) -> Response<Body> {
-        let (status, kind, message) = match self {
+    fn parts(self) -> (StatusCode, &'static str, String) {
+        match self {
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found_error", "unknown API prefix (use /anthropic)".to_owned()),
             Self::BadRequest(m) => (StatusCode::BAD_REQUEST, "invalid_request_error", m),
             Self::Blocked(m) => (
@@ -411,7 +558,22 @@ impl GatewayError {
                 format!("Riot could not check this request for sensitive data, so it was not sent: {m}"),
             ),
             Self::Upstream(m) => (StatusCode::BAD_GATEWAY, "api_error", format!("Riot gateway could not reach the API: {m}")),
-        };
+        }
+    }
+
+    /// The same refusal as a WebSocket `error` event with an HTTP status, which Codex reports
+    /// as a final error (a `response.failed` reads as a broken stream: it retries, then falls
+    /// back to HTTPS). The request is not sent.
+    fn error_event(self) -> String {
+        let (status, kind, message) = self.parts();
+        tracing::warn!(status = status.as_u16(), message, "gateway refused a request");
+        let error = serde_json::json!({ "type": kind, "code": "riot_blocked", "message": message });
+        serde_json::json!({ "type": "error", "status": status.as_u16(), "error": error }).to_string()
+    }
+
+    /// An error in the Messages API's shape, so the client shows the message.
+    fn response(self) -> Response<Body> {
+        let (status, kind, message) = self.parts();
         tracing::warn!(status = status.as_u16(), message, "gateway refused a request");
         let body = serde_json::json!({ "type": "error", "error": { "type": kind, "message": message } });
         let mut response = Response::new(full(body.to_string().into()));
@@ -488,17 +650,17 @@ mod tests {
     async fn gateway(agent: Arc<Agent>, upstream: String) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/anthropic", listener.local_addr().unwrap());
-        tokio::spawn(Gateway::new(agent, Some(upstream), None).unwrap().run(listener));
+        tokio::spawn(Gateway::new(agent, Upstreams::any(upstream), None).unwrap().run(listener));
         url
     }
 
     /// The gateway with its `HTTPS_PROXY` entry on, and the root its certificates chain to.
-    async fn proxy(agent: Arc<Agent>, upstream: String) -> (SocketAddr, reqwest::Certificate) {
+    async fn proxy(agent: Arc<Agent>, upstream: String) -> (SocketAddr, rustls::pki_types::CertificateDer<'static>) {
         let authority = Arc::new(Authority::load_or_create(&agent.paths.data_dir).unwrap());
-        let root = reqwest::Certificate::from_der(authority.root()).unwrap();
+        let root = authority.root().clone();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(Gateway::new(agent, Some(upstream), Some(authority)).unwrap().run(listener));
+        tokio::spawn(Gateway::new(agent, Upstreams::any(upstream), Some(authority)).unwrap().run(listener));
         (addr, root)
     }
 
@@ -543,6 +705,16 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn upstreams_are_chosen_per_host() {
+        let upstreams = Upstreams::parse("api.anthropic.com=http://127.0.0.1:18081, ChatGPT.com=http://localhost:18082/").unwrap();
+        assert_eq!(upstreams.base("api.anthropic.com"), "http://127.0.0.1:18081");
+        assert_eq!(upstreams.base("chatgpt.com"), "http://localhost:18082");
+        assert_eq!(upstreams.base("claude.ai"), "https://claude.ai");
+        assert_eq!(Upstreams::parse("http://[::1]:9").unwrap().base("chatgpt.com"), "http://[::1]:9");
+        assert!(Upstreams::parse("chatgpt.com=https://evil.example").is_err(), "credentials stay on this machine");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn values_never_reach_the_api_and_come_back_to_the_client() {
         let agent = agent("roundtrip", &["api.anthropic.com"]);
@@ -582,7 +754,7 @@ mod tests {
         // certificate must be valid for api.anthropic.com under the root's name constraints.
         let client = reqwest::Client::builder()
             .proxy(reqwest::Proxy::https(format!("http://{proxy}")).unwrap())
-            .tls_certs_only([root])
+            .tls_certs_only([reqwest::Certificate::from_der(&root).unwrap()])
             .build()
             .unwrap();
         let text = format!("Mail {MAIL}, IBAN {IBAN}.");
@@ -619,5 +791,180 @@ mod tests {
         let (proxy, _) = proxy(agent, upstream).await;
         let (_, status) = raw_connect(proxy, "example.com:443").await;
         assert!(status.contains(" 400 "), "{status}");
+    }
+
+    /// A Responses WebSocket stand-in: records each `response.create` and answers with its last
+    /// input text, three bytes per delta, then the closing events.
+    async fn fake_responses_ws() -> (String, Arc<Mutex<Vec<Value>>>) {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+        let seen = Arc::new(Mutex::new(vec![]));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let recorded = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let recorded = recorded.clone();
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                    while let Some(Ok(Message::Text(message))) = ws.next().await {
+                        let body: Value = serde_json::from_str(message.as_str()).unwrap();
+                        let text = body["input"].as_array().unwrap().last().unwrap()["content"][0]["text"].as_str().unwrap().to_owned();
+                        recorded.lock().unwrap().push(body);
+                        let mut events: Vec<Value> = text
+                            .as_bytes()
+                            .chunks(3)
+                            .map(|p| json!({ "type": "response.output_text.delta", "item_id": "m", "content_index": 0, "delta": String::from_utf8_lossy(p) }))
+                            .collect();
+                        events.push(json!({ "type": "response.output_text.done", "item_id": "m", "content_index": 0, "text": text }));
+                        let item = json!({ "type": "message", "id": "m", "content": [{ "type": "output_text", "text": text }] });
+                        events.push(json!({ "type": "response.completed", "response": { "output": [item] } }));
+                        for event in events {
+                            ws.send(Message::text(event.to_string())).await.unwrap();
+                        }
+                    }
+                });
+            }
+        });
+        (base, seen)
+    }
+
+    /// A WebSocket to `wss://chatgpt.com/backend-api/codex/responses` through the proxy, trusting
+    /// the Riot root only.
+    async fn responses_ws(
+        proxy: SocketAddr,
+        root: rustls::pki_types::CertificateDer<'static>,
+    ) -> tokio_tungstenite::WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let (tcp, status) = raw_connect(proxy, "chatgpt.com:443").await;
+        assert!(status.contains(" 200 "), "{status}");
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(root).unwrap();
+        let config = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("chatgpt.com").unwrap();
+        let tls = tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, tcp).await.unwrap();
+        let mut request = "wss://chatgpt.com/backend-api/codex/responses".into_client_request().unwrap();
+        request.headers_mut().insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer test"));
+        tokio_tungstenite::client_async(request, tls).await.unwrap().0
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_responses_websocket_is_redacted_and_detokenized() {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+        let agent = agent("ws", &["chatgpt.com"]);
+        let (upstream, seen) = fake_responses_ws().await;
+        let (proxy, root) = proxy(agent.clone(), upstream).await;
+        let mut ws = responses_ws(proxy, root).await;
+        let text = format!("Mail {MAIL}, IBAN {IBAN}.");
+        let create = json!({ "type": "response.create", "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": text }] }] });
+        ws.send(Message::text(create.to_string())).await.unwrap();
+
+        let mut deltas = String::new();
+        let completed = loop {
+            let event: Value = serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            match event["type"].as_str().unwrap() {
+                "response.output_text.delta" => deltas.push_str(event["delta"].as_str().unwrap()),
+                "response.completed" => break event,
+                _ => {}
+            }
+        };
+        assert_eq!(deltas, text, "the streamed answer is detokenized, split tokens included");
+        assert_eq!(completed["response"]["output"][0]["content"][0]["text"], text);
+        let sent = seen.lock().unwrap()[0].to_string();
+        assert!(!sent.contains(MAIL) && !sent.contains("3000 6000"), "upstream saw: {sent}");
+        assert!(sent.contains("[EMAIL") && sent.contains("[IBAN"), "upstream saw: {sent}");
+        assert_eq!(agent.spool.len(), 1);
+
+        // A message that cannot be checked is not sent: the client gets a failure instead.
+        ws.send(Message::text("not json")).await.unwrap();
+        let refusal: Value = serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(refusal["type"], "error");
+        assert_eq!(refusal["status"], 400);
+        assert_eq!(refusal["error"]["code"], "riot_blocked");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    /// A Responses HTTP stand-in: records the request body (and its encoding), answers with its
+    /// last input text as SSE deltas of three bytes.
+    async fn fake_responses_sse() -> (String, Arc<Mutex<Vec<(Option<String>, Value)>>>) {
+        let seen = Arc::new(Mutex::new(vec![]));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let recorded = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let recorded = recorded.clone();
+                tokio::spawn(async move {
+                    let service = hyper::service::service_fn(move |req: Request<Incoming>| {
+                        let recorded = recorded.clone();
+                        async move {
+                            let encoding = req.headers().get(header::CONTENT_ENCODING).map(|v| v.to_str().unwrap().to_owned());
+                            let body: Value = serde_json::from_slice(&req.into_body().collect().await.unwrap().to_bytes()).unwrap();
+                            let text = body["input"][0]["content"][0]["text"].as_str().unwrap().to_owned();
+                            recorded.lock().unwrap().push((encoding, body));
+                            let sse: String = text
+                                .as_bytes()
+                                .chunks(3)
+                                .map(|p| json!({ "type": "response.output_text.delta", "item_id": "m", "content_index": 0, "delta": String::from_utf8_lossy(p) }))
+                                .map(|e| format!("event: response.output_text.delta\ndata: {e}\n\n"))
+                                .collect();
+                            // No content type, as chatgpt.com sends it.
+                            Ok::<_, Infallible>(Response::new(full(sse.into())))
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), service).await;
+                });
+            }
+        });
+        (base, seen)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_zstd_responses_request_over_https_is_redacted() {
+        let agent = agent("zstd", &["chatgpt.com"]);
+        let (upstream, seen) = fake_responses_sse().await;
+        let (proxy, root) = proxy(agent.clone(), upstream).await;
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::https(format!("http://{proxy}")).unwrap())
+            .tls_certs_only([reqwest::Certificate::from_der(&root).unwrap()])
+            .build()
+            .unwrap();
+        let text = format!("Mail {MAIL}, IBAN {IBAN}.");
+        let create = json!({ "model": "m", "stream": true, "input": [{ "type": "message", "role": "user", "content": [{ "type": "input_text", "text": text }] }] });
+        let sse = client
+            .post("https://chatgpt.com/backend-api/codex/responses")
+            .header("authorization", "Bearer test")
+            .header(header::CONTENT_ENCODING, "zstd")
+            .body(zstd::encode_all(create.to_string().as_bytes(), 3).unwrap())
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let answer: String = sse
+            .split("\n\n")
+            .filter_map(|e| e.lines().find_map(|l| l.strip_prefix("data: ")))
+            .map(|d| serde_json::from_str::<Value>(d).unwrap()["delta"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(answer, text);
+        let (encoding, sent) = seen.lock().unwrap()[0].clone();
+        assert_eq!(encoding, None, "sent on uncompressed");
+        let sent = sent.to_string();
+        assert!(!sent.contains(MAIL) && sent.contains("[EMAIL"), "upstream saw: {sent}");
+
+        // An encoding the gateway cannot read is refused, not passed on.
+        let refused = client
+            .post("https://chatgpt.com/backend-api/codex/responses")
+            .header(header::CONTENT_ENCODING, "br")
+            .body("x")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(seen.lock().unwrap().len(), 1);
     }
 }

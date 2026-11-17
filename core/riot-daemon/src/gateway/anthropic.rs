@@ -16,6 +16,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use super::sse::{Rewrite, data_json, event_end, write_event};
 use super::tokens::{self, Escape, StreamDetokenizer};
 
 /// The paths whose bodies are Messages API requests.
@@ -147,8 +148,8 @@ pub struct SseRewriter {
     blocks: HashMap<u64, StreamDetokenizer>,
 }
 
-impl SseRewriter {
-    pub fn push(&mut self, chunk: &[u8], resolve: &mut dyn FnMut(&str) -> Option<String>) -> Vec<u8> {
+impl Rewrite for SseRewriter {
+    fn push(&mut self, chunk: &[u8], resolve: &mut dyn FnMut(&str) -> Option<String>) -> Vec<u8> {
         self.buffer.extend_from_slice(chunk);
         let mut out = vec![];
         while let Some(end) = event_end(&self.buffer) {
@@ -159,10 +160,12 @@ impl SseRewriter {
     }
 
     /// The upstream ended: whatever is left is passed on as it is.
-    pub fn finish(&mut self) -> Vec<u8> {
+    fn finish(&mut self) -> Vec<u8> {
         std::mem::take(&mut self.buffer)
     }
+}
 
+impl SseRewriter {
     fn event(&mut self, raw: &[u8], resolve: &mut dyn FnMut(&str) -> Option<String>, out: &mut Vec<u8>) {
         let Some(mut data) = data_json(raw) else { return out.extend_from_slice(raw) };
         let index = data.get("index").and_then(Value::as_u64);
@@ -215,34 +218,6 @@ impl SseRewriter {
             _ => out.extend_from_slice(raw),
         }
     }
-}
-
-/// End (exclusive) of the first complete event: a blank line, `\n\n` or `\r\n\r\n`.
-fn event_end(buffer: &[u8]) -> Option<usize> {
-    let lf = buffer.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
-    let crlf = buffer.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
-    match (lf, crlf) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    }
-}
-
-/// The event's `data:` payload, parsed, when it is one JSON object.
-fn data_json(raw: &[u8]) -> Option<Value> {
-    let text = std::str::from_utf8(raw).ok()?;
-    let data: Vec<&str> = text
-        .lines()
-        .filter_map(|l| l.strip_prefix("data:"))
-        .map(|d| d.strip_prefix(' ').unwrap_or(d))
-        .collect();
-    if data.is_empty() {
-        return None;
-    }
-    serde_json::from_str(&data.join("\n")).ok().filter(Value::is_object)
-}
-
-fn write_event(name: &str, data: &Value, out: &mut Vec<u8>) {
-    out.extend_from_slice(format!("event: {name}\ndata: {data}\n\n").as_bytes());
 }
 
 #[cfg(test)]
