@@ -6,12 +6,18 @@ import SystemExtensions
 /// pre-approved by the MDM profile, so the user sees no prompt:
 ///   * daemon + per-user agent: SMAppService, approved by `com.apple.servicemanagement`
 ///     (Managed Login Items, rule on the team id);
-///   * ES extension: OSSystemExtensionRequest, approved by `com.apple.system-extension-policy`,
-///     with Full Disk Access from `com.apple.TCC.configuration-profile-policy`.
+///   * system extensions: OSSystemExtensionRequest, approved by `com.apple.system-extension-policy`:
+///     ES (Full Disk Access from `com.apple.TCC.configuration-profile-policy`) and the network
+///     extension (its transparent proxy configuration comes from `com.apple.vpn.managed`).
 /// Development runs (outside /Applications) skip all of it.
 @MainActor
 final class Installer: NSObject, OSSystemExtensionRequestDelegate {
-    static let extensionIdentifier = "com.tryriot.agent.es"
+    /// The bundled system extensions, named after the app's bundle id; each is activated when
+    /// its bundle ships in the app.
+    static var extensionIdentifiers: [String] {
+        let app = Bundle.main.bundleIdentifier ?? "com.tryriot.agent"
+        return ["\(app).es", "\(app).network"]
+    }
 
     static var isInstalledCopy: Bool { Bundle.main.bundlePath.hasPrefix("/Applications/") }
 
@@ -20,9 +26,9 @@ final class Installer: NSObject, OSSystemExtensionRequestDelegate {
         register(SMAppService.daemon(plistName: "com.tryriot.agent.daemon.plist"), "daemon")
         register(SMAppService.agent(plistName: "com.tryriot.agent.plist"), "agent")
         let sysext = Bundle.main.bundleURL.appendingPathComponent("Contents/Library/SystemExtensions")
-        if FileManager.default.fileExists(atPath: sysext.path) {
-            let request = OSSystemExtensionRequest.activationRequest(
-                forExtensionWithIdentifier: Self.extensionIdentifier, queue: .main)
+        for identifier in Self.extensionIdentifiers
+        where FileManager.default.fileExists(atPath: sysext.appendingPathComponent("\(identifier).systemextension").path) {
+            let request = OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: identifier, queue: .main)
             request.delegate = self
             OSSystemExtensionManager.shared.submitRequest(request)
         }
@@ -47,15 +53,15 @@ final class Installer: NSObject, OSSystemExtensionRequestDelegate {
     }
 
     nonisolated func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
-        NSLog("riot: ES extension awaits approval: the system-extension-policy payload is missing")
+        NSLog("riot: %@ awaits approval: the system-extension-policy payload is missing", request.identifier)
     }
 
     nonisolated func request(_ request: OSSystemExtensionRequest,
                              didFinishWithResult result: OSSystemExtensionRequest.Result) {
-        NSLog("riot: ES extension activation result %d", result.rawValue)
+        NSLog("riot: %@ activation result %d", request.identifier, result.rawValue)
     }
 
     nonisolated func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
-        NSLog("riot: ES extension activation failed: %@", String(describing: error))
+        NSLog("riot: %@ activation failed: %@", request.identifier, String(describing: error))
     }
 }

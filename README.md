@@ -32,6 +32,7 @@ Why Rust, QuickJS and native apps: [docs/stack-choices.md](docs/stack-choices.md
 | `core/riot-daemon`                   | the daemon (`riot-daemon`), its local API gateway (`src/gateway/`), and a CLI (`riotctl`)                                               |
 | `apple/RiotAgent`                    | menu bar app (SwiftPM): popup, clipboard guard, HUD, installer                                                                          |
 | `apple/RiotES`                       | Endpoint Security system extension                                                                                                      |
+| `apple/RiotNE`                       | network system extension: transparent proxy handing protected apps' TLS flows to the daemon                                             |
 | `apple/build-app.sh`, `build-pkg.sh` | `Riot.app` and the MDM `.pkg`                                                                                                           |
 | `mdm/`                               | configuration profile template + renderer                                                                                               |
 | `dev/`                               | stub parrot, dev settings, `run-dev.sh`                                                                                                 |

@@ -10,13 +10,16 @@
 //! No certificate is involved: the client speaks plain HTTP to loopback. Bodies and headers are
 //! never logged, they carry prompts and credentials.
 //!
-//! For development, the same port is also an `HTTPS_PROXY` (`RIOT_DEV_PROXY=1`): a CONNECT to a
-//! host the policy lists is answered with a certificate from the Riot CA ([`ca`]) and its
-//! requests take the same path as the base URL's; any other CONNECT is tunnelled untouched. It
-//! stands in for the transparent proxy, which will hand the daemon the same TLS flows.
+//! TLS flows reach it as CONNECTs: from the network extension over a Unix socket next to the
+//! daemon's (`flows.sock`, root or the daemon's user only), and for development from any client
+//! with `HTTPS_PROXY` on the same TCP port (`RIOT_DEV_PROXY=1`). The route is chosen from the
+//! ClientHello's server name: a host the policy lists gets a certificate from the Riot CA
+//! ([`ca`]) and its requests take the same path as the base URL's; anything else is tunnelled
+//! untouched, the bytes read to decide replayed first.
 
 mod anthropic;
 mod ca;
+mod recording;
 mod responses;
 mod sse;
 mod tokens;
@@ -34,16 +37,17 @@ use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, Full, Limited, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::header::{self, HeaderMap, HeaderName, HeaderValue};
-use hyper::upgrade::Upgraded;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use riot_detect::{Detection, Engine, Options};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream, UnixListener};
 
 use crate::agent::{Agent, Target};
 use ca::Authority;
+use recording::Recording;
 
 type Body = UnsyncBoxBody<Bytes, std::io::Error>;
 
@@ -54,6 +58,8 @@ const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 /// Largest single text redacted: the engine's ceiling for extracted file text. A longer text
 /// is not known to be clean, so the request is refused.
 const MAX_TEXT_BYTES: usize = 1024 * 1024;
+/// How long a client may take to send its ClientHello once its CONNECT is answered.
+const HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 /// Redacted texts remembered per scope. Clients resend the whole conversation on every turn:
 /// only new texts reach the engine (and the report).
 const CACHE_ENTRIES: usize = 4096;
@@ -65,24 +71,67 @@ pub struct Gateway {
     client: reqwest::Client,
     cache: Mutex<Cache>,
     upstreams: Upstreams,
-    /// Set when the `HTTPS_PROXY` entry is on.
+    /// Issues the certificates of decrypted flows.
     authority: Option<Arc<Authority>>,
+    /// Whether the TCP port answers CONNECT (`RIOT_DEV_PROXY=1`).
+    tcp_connect: bool,
+}
+
+/// Where a request came in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Entry {
+    /// The loopback TCP port: base URL, and CONNECT for development.
+    Tcp,
+    /// `flows.sock`: the network extension's flows, as CONNECTs.
+    Flows,
 }
 
 pub async fn serve(agent: Arc<Agent>, addr: SocketAddr) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let upstreams = Upstreams::from_env()?;
-    let authority = match std::env::var_os("RIOT_DEV_PROXY").is_some_and(|v| v == "1") {
-        true => Some(Arc::new(Authority::load_or_create(&agent.paths.data_dir)?)),
-        false => None,
+    let tcp_connect = std::env::var_os("RIOT_DEV_PROXY").is_some_and(|v| v == "1");
+    let authority = Arc::new(Authority::load_or_create(&agent.paths.data_dir)?);
+    let flows_path = agent.paths.socket.with_file_name("flows.sock");
+    let flows = match bind_flows(&flows_path) {
+        Ok(listener) => Some(listener),
+        Err(e) => {
+            tracing::warn!(path = %flows_path.display(), error = %e, "no flow socket: the network extension cannot hand flows over");
+            None
+        }
     };
     tracing::info!(
         %addr,
         upstream = %upstreams,
-        proxy_ca = authority.as_ref().map(|a| a.cert_path().display().to_string()),
+        ca = %authority.cert_path().display(),
+        flows = flows.is_some().then(|| flows_path.display().to_string()),
+        tcp_connect,
         "gateway listening"
     );
-    Gateway::new(agent, upstreams, authority)?.run(listener).await
+    let gateway = Gateway::new(agent, upstreams, Some(authority), tcp_connect)?;
+    if let Some(flows) = flows {
+        tokio::spawn(gateway.clone().run_flows(flows));
+    }
+    gateway.run(listener).await
+}
+
+/// Only root (the network extension) and the daemon's own user may hand flows over: the socket
+/// is `0600`, and each peer's uid is checked.
+fn bind_flows(path: &std::path::Path) -> anyhow::Result<UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+    // The gateway may start before the server has made the sockets' folder.
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let _ = std::fs::remove_file(path);
+    let listener = UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+fn peer_allowed(stream: &tokio::net::UnixStream) -> bool {
+    let uid = stream.peer_cred().map(|c| c.uid());
+    // SAFETY: geteuid has no preconditions.
+    uid.is_ok_and(|uid| uid == 0 || uid == unsafe { libc::geteuid() })
 }
 
 /// Where requests for an API host go instead of `https://<host>`: a local server in tests, or
@@ -145,12 +194,12 @@ impl std::fmt::Display for Upstreams {
 }
 
 impl Gateway {
-    fn new(agent: Arc<Agent>, upstreams: Upstreams, authority: Option<Arc<Authority>>) -> anyhow::Result<Arc<Self>> {
+    fn new(agent: Arc<Agent>, upstreams: Upstreams, authority: Option<Arc<Authority>>, tcp_connect: bool) -> anyhow::Result<Arc<Self>> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .build()?;
-        Ok(Arc::new(Self { agent, client, cache: Mutex::new(Cache::default()), upstreams, authority }))
+        Ok(Arc::new(Self { agent, client, cache: Mutex::new(Cache::default()), upstreams, authority, tcp_connect }))
     }
 
     async fn run(self: Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
@@ -158,22 +207,44 @@ impl Gateway {
             let (stream, _) = listener.accept().await?;
             let gateway = self.clone();
             tokio::spawn(async move {
-                let service = hyper::service::service_fn(move |req| {
-                    let gateway = gateway.clone();
-                    async move { Ok::<_, Infallible>(gateway.handle(req).await) }
-                });
-                let io = TokioIo::new(stream);
-                if let Err(e) = hyper::server::conn::http1::Builder::new().serve_connection(io, service).with_upgrades().await {
-                    tracing::debug!(error = %e, "gateway connection ended");
-                }
+                gateway.serve_entry(TokioIo::new(stream), Entry::Tcp).await;
             });
         }
     }
 
-    async fn handle(self: Arc<Self>, req: Request<Incoming>) -> Response<Body> {
-        match req.method() {
-            &Method::CONNECT => self.connect(req).await.unwrap_or_else(GatewayError::response),
-            _ => self.handle_request(req, None).await,
+    async fn run_flows(self: Arc<Self>, listener: UnixListener) {
+        loop {
+            let stream = match listener.accept().await {
+                Ok((stream, _)) => stream,
+                Err(e) => return tracing::error!(error = %e, "flow socket closed"),
+            };
+            if !peer_allowed(&stream) {
+                tracing::warn!("flow socket: a peer that is neither root nor the daemon's user was refused");
+                continue;
+            }
+            let gateway = self.clone();
+            tokio::spawn(async move { gateway.serve_entry(TokioIo::new(stream), Entry::Flows).await });
+        }
+    }
+
+    async fn serve_entry<S>(self: Arc<Self>, io: TokioIo<S>, entry: Entry)
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let service = hyper::service::service_fn(move |req| {
+            let gateway = self.clone();
+            async move { Ok::<_, Infallible>(gateway.handle(req, entry).await) }
+        });
+        if let Err(e) = hyper::server::conn::http1::Builder::new().serve_connection(io, service).with_upgrades().await {
+            tracing::debug!(error = %e, "gateway connection ended");
+        }
+    }
+
+    async fn handle(self: Arc<Self>, req: Request<Incoming>, entry: Entry) -> Response<Body> {
+        match (req.method(), entry) {
+            (&Method::CONNECT, _) => self.connect(req, entry).await.unwrap_or_else(GatewayError::response),
+            (_, Entry::Tcp) => self.handle_request(req, None).await,
+            (_, Entry::Flows) => GatewayError::BadRequest("the flow socket only takes CONNECT".into()).response(),
         }
     }
 
@@ -191,41 +262,68 @@ impl Gateway {
         response
     }
 
-    /// The `HTTPS_PROXY` entry: TLS is terminated only for a host the policy lists, with a
-    /// certificate from the Riot CA; anything else is tunnelled as is.
-    async fn connect(self: Arc<Self>, req: Request<Incoming>) -> Result<Response<Body>, GatewayError> {
-        let authority = self.authority.clone().ok_or_else(|| GatewayError::BadRequest("the proxy entry is off (RIOT_DEV_PROXY)".into()))?;
+    /// A CONNECT, answered at once: the route is chosen from what the client sends next.
+    /// `Riot-App` (set by the network extension) names the process, for the log.
+    async fn connect(self: Arc<Self>, req: Request<Incoming>, entry: Entry) -> Result<Response<Body>, GatewayError> {
+        if entry == Entry::Tcp && !self.tcp_connect {
+            return Err(GatewayError::BadRequest("the proxy entry is off (RIOT_DEV_PROXY)".into()));
+        }
+        let authority = self.authority.clone().ok_or_else(|| GatewayError::BadRequest("no certificate authority".into()))?;
         let target = req.uri().authority().ok_or_else(|| GatewayError::BadRequest("CONNECT needs host:port".into()))?;
-        let (host, port) = (target.host().to_ascii_lowercase(), target.port_u16().unwrap_or(443));
-        let intercept = port == 443 && self.agent.api_target(&host).is_some();
-        tracing::info!(host, port, intercept, "gateway connect");
-        let next = if intercept {
-            // A host to protect that the CA cannot cover is refused, not tunnelled unchecked.
-            Next::Tls(authority.server_config(&host).map_err(|e| GatewayError::Blocked(e.to_string()))?)
-        } else {
-            Next::Tunnel(TcpStream::connect((host.as_str(), port)).await.map_err(|e| GatewayError::Upstream(e.to_string()))?)
-        };
+        let (host, port) = (target.host().trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase(), target.port_u16().unwrap_or(443));
+        let app = req.headers().get("riot-app").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
         tokio::spawn(async move {
             let client = match hyper::upgrade::on(req).await {
                 Ok(upgraded) => TokioIo::new(upgraded),
                 Err(e) => return tracing::debug!(error = %e, "gateway connect upgrade failed"),
             };
-            let ended = match next {
-                Next::Tls(config) => self.serve_tls(client, config, host.into()).await,
-                Next::Tunnel(mut server) => {
-                    let mut client = client;
-                    tokio::io::copy_bidirectional(&mut client, &mut server).await.map(drop).map_err(Into::into)
-                }
-            };
-            if let Err(e) = ended {
-                tracing::debug!(error = %e, "gateway tunnel ended");
+            if let Err(e) = self.route(client, host, port, app, authority).await {
+                tracing::debug!(error = %e, "gateway flow ended");
             }
         });
         Ok(Response::new(full(Bytes::new())))
     }
 
-    async fn serve_tls(self: Arc<Self>, client: TokioIo<Upgraded>, config: Arc<rustls::ServerConfig>, host: Arc<str>) -> anyhow::Result<()> {
-        let tls = tokio_rustls::TlsAcceptor::from(config).accept(client).await?;
+    /// Port 443: the ClientHello's server name (or the CONNECT host without one) decides. A
+    /// host the policy lists is decrypted; one the CA cannot cover, or non-TLS traffic to it,
+    /// is dropped (fail closed). Anything else is tunnelled to the CONNECT target.
+    async fn route<S>(self: Arc<Self>, client: S, host: String, port: u16, app: String, authority: Arc<Authority>) -> anyhow::Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        if port != 443 {
+            tracing::info!(host, port, app, intercept = false, "gateway connect");
+            return tunnel(client, &host, port, &[]).await;
+        }
+        let mut lazy = tokio_rustls::LazyConfigAcceptor::new(rustls::server::Acceptor::default(), Recording::new(client));
+        let hello = tokio::time::timeout(HELLO_TIMEOUT, &mut lazy).await;
+        let mut start = match hello {
+            Ok(Ok(start)) => start,
+            Ok(Err(_)) => {
+                anyhow::ensure!(self.agent.api_target(&host).is_none(), "non-TLS traffic to {host}:443 dropped");
+                let mut io = lazy.take_io().ok_or_else(|| anyhow::anyhow!("connection lost"))?;
+                let sent = io.stop();
+                tracing::info!(host, port, app, intercept = false, tls = false, "gateway connect");
+                return tunnel(io, &host, port, &sent).await;
+            }
+            Err(_) => anyhow::bail!("no ClientHello from the client"),
+        };
+        let name = start.client_hello().server_name().map(str::to_ascii_lowercase).unwrap_or_else(|| host.clone());
+        let intercept = self.agent.api_target(&name).is_some();
+        tracing::info!(host, name, port, app, intercept, "gateway connect");
+        let sent = start.io.stop();
+        if !intercept {
+            return tunnel(start.io, &host, port, &sent).await;
+        }
+        let config = authority.server_config(&name)?;
+        let tls = start.into_stream(config).await?;
+        self.serve_tls(tls, name.into()).await
+    }
+
+    async fn serve_tls<S>(self: Arc<Self>, tls: S, host: Arc<str>) -> anyhow::Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let service = hyper::service::service_fn(move |req| {
             let (gateway, host) = (self.clone(), host.clone());
             async move { Ok::<_, Infallible>(gateway.handle_request(req, Some(host)).await) }
@@ -521,9 +619,12 @@ impl Cache {
     }
 }
 
-enum Next {
-    Tls(Arc<rustls::ServerConfig>),
-    Tunnel(TcpStream),
+/// Connects to the CONNECT target, sends what the client already sent, then pipes both ways.
+async fn tunnel<S: AsyncRead + AsyncWrite + Unpin>(mut client: S, host: &str, port: u16, sent: &[u8]) -> anyhow::Result<()> {
+    let mut server = TcpStream::connect((host, port)).await?;
+    server.write_all(sent).await?;
+    tokio::io::copy_bidirectional(&mut client, &mut server).await?;
+    Ok(())
 }
 
 fn forwarded_headers(headers: &HeaderMap) -> HeaderMap {
@@ -650,7 +751,7 @@ mod tests {
     async fn gateway(agent: Arc<Agent>, upstream: String) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/anthropic", listener.local_addr().unwrap());
-        tokio::spawn(Gateway::new(agent, Upstreams::any(upstream), None).unwrap().run(listener));
+        tokio::spawn(Gateway::new(agent, Upstreams::any(upstream), None, false).unwrap().run(listener));
         url
     }
 
@@ -660,15 +761,20 @@ mod tests {
         let root = authority.root().clone();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(Gateway::new(agent, Upstreams::any(upstream), Some(authority)).unwrap().run(listener));
+        tokio::spawn(Gateway::new(agent, Upstreams::any(upstream), Some(authority), true).unwrap().run(listener));
         (addr, root)
     }
 
     /// Sends a raw CONNECT; returns the stream and the response's status line.
     async fn raw_connect(proxy: SocketAddr, target: &str) -> (TcpStream, String) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut stream = TcpStream::connect(proxy).await.unwrap();
-        stream.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes()).await.unwrap();
+        let status = send_connect(&mut stream, target).await;
+        (stream, status)
+    }
+
+    async fn send_connect<S: AsyncRead + AsyncWrite + Unpin>(stream: &mut S, target: &str) -> String {
+        use tokio::io::AsyncReadExt;
+        stream.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\nRiot-App: test\r\n\r\n").as_bytes()).await.unwrap();
         let mut head = vec![];
         while !head.ends_with(b"\r\n\r\n") {
             let mut byte = [0];
@@ -678,7 +784,20 @@ mod tests {
             head.push(byte[0]);
         }
         let head = String::from_utf8(head).unwrap();
-        (stream, head.lines().next().unwrap_or_default().to_owned())
+        head.lines().next().unwrap_or_default().to_owned()
+    }
+
+    /// A TLS client that trusts the Riot root only.
+    async fn tls_to<S: AsyncRead + AsyncWrite + Unpin>(
+        stream: S,
+        root: rustls::pki_types::CertificateDer<'static>,
+        name: &str,
+    ) -> std::io::Result<tokio_rustls::client::TlsStream<S>> {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(root).unwrap();
+        let config = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from(name.to_owned()).unwrap();
+        tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, stream).await
     }
 
     /// What the client reads: the streamed text, rebuilt.
@@ -788,9 +907,57 @@ mod tests {
     async fn a_policy_host_the_ca_cannot_cover_is_refused() {
         let agent = agent("refused", &["example.com"]);
         let (upstream, _) = fake_api().await;
-        let (proxy, _) = proxy(agent, upstream).await;
-        let (_, status) = raw_connect(proxy, "example.com:443").await;
-        assert!(status.contains(" 400 "), "{status}");
+        let (proxy, root) = proxy(agent, upstream).await;
+        let (stream, status) = raw_connect(proxy, "example.com:443").await;
+        assert!(status.contains(" 200 "), "{status}");
+        // No certificate, and no tunnel either: the connection is dropped at the ClientHello.
+        assert!(tls_to(stream, root, "example.com").await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_flow_to_an_address_is_routed_by_its_server_name() {
+        let agent = agent("flows", &["api.anthropic.com"]);
+        let (upstream, seen) = fake_api().await;
+        let authority = Arc::new(Authority::load_or_create(&agent.paths.data_dir).unwrap());
+        let root = authority.root().clone();
+        let path = agent.paths.data_dir.join("flows.sock");
+        let listener = bind_flows(&path).unwrap();
+        tokio::spawn(Gateway::new(agent.clone(), Upstreams::any(upstream), Some(authority), false).unwrap().run_flows(listener));
+
+        // The extension knows the destination address, not always its name.
+        let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+        let status = send_connect(&mut stream, "192.0.2.1:443").await;
+        assert!(status.contains(" 200 "), "{status}");
+        let tls = tls_to(stream, root, "api.anthropic.com").await.unwrap();
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await.unwrap();
+        tokio::spawn(conn);
+        let body = json!({ "model": "m", "stream": true, "messages": [{ "role": "user", "content": format!("Mail {MAIL}") }] });
+        let req = Request::post("/v1/messages")
+            .header(header::HOST, "api.anthropic.com")
+            .header("x-api-key", "sk-test")
+            .body(full(body.to_string().into()))
+            .unwrap();
+        let response = sender.send_request(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let sse = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(sse.contains("jea") && !sse.contains("[EMA"), "the answer is detokenized: {sse}");
+        let sent = seen.lock().unwrap()[0].to_string();
+        assert!(!sent.contains(MAIL) && sent.contains("[EMAIL"), "upstream saw: {sent}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_flow_socket_takes_only_connect() {
+        let agent = agent("flows-only", &[]);
+        let path = agent.paths.data_dir.join("flows.sock");
+        let listener = bind_flows(&path).unwrap();
+        tokio::spawn(Gateway::new(agent, Upstreams::default(), None, false).unwrap().run_flows(listener));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let stream = tokio::net::UnixStream::connect(&path).await.unwrap();
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.unwrap();
+        tokio::spawn(conn);
+        let req = Request::get("/anthropic/v1/models").header(header::HOST, "x").body(full(Bytes::new())).unwrap();
+        assert_eq!(sender.send_request(req).await.unwrap().status(), StatusCode::BAD_REQUEST);
     }
 
     /// A Responses WebSocket stand-in: records each `response.create` and answers with its last
@@ -839,11 +1006,7 @@ mod tests {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let (tcp, status) = raw_connect(proxy, "chatgpt.com:443").await;
         assert!(status.contains(" 200 "), "{status}");
-        let mut roots = rustls::RootCertStore::empty();
-        roots.add(root).unwrap();
-        let config = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
-        let name = rustls::pki_types::ServerName::try_from("chatgpt.com").unwrap();
-        let tls = tokio_rustls::TlsConnector::from(Arc::new(config)).connect(name, tcp).await.unwrap();
+        let tls = tls_to(tcp, root, "chatgpt.com").await.unwrap();
         let mut request = "wss://chatgpt.com/backend-api/codex/responses".into_client_request().unwrap();
         request.headers_mut().insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer test"));
         tokio_tungstenite::client_async(request, tls).await.unwrap().0

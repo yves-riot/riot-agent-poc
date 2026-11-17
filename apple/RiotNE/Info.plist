@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>__APP_ID__.network</string>
+  <key>CFBundleName</key><string>RiotNE</string>
+  <key>CFBundleExecutable</key><string>__APP_ID__.network</string>
+  <key>CFBundlePackageType</key><string>SYSX</string>
+  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>15.0</string>
+  <key>NSSystemExtensionUsageDescription</key>
+  <string>Riot removes sensitive data from what AI apps send.</string>
+  <key>NetworkExtension</key>
+  <dict>
+    <!-- Prefixed with the team id: the app group the entitlements declare. -->
+    <key>NEMachServiceName</key><string>__TEAM_ID__.__APP_ID__.network</string>
+    <key>NEProviderClasses</key>
+    <dict>
+      <key>com.apple.networkextension.app-proxy</key><string>RiotNE.TransparentProxy</string>
+    </dict>
+  </dict>
+</dict>
+</plist>

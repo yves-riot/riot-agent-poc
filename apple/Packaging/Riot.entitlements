@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Bind the signature to the embedded provisioning profile (Xcode adds them itself). -->
+  <key>com.apple.application-identifier</key><string>__TEAM_ID__.__APP_ID__</string>
+  <key>com.apple.developer.team-identifier</key><string>__TEAM_ID__</string>
+  <!-- Lets Riot.app activate the system extensions it bundles (OSSystemExtensionRequest). -->
+  <key>com.apple.developer.system-extension.install</key><true/>
+</dict>
+</plist>

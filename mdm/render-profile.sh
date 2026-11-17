@@ -6,8 +6,10 @@
 set -eu
 : "${TEAM_ID:?}" "${API_URL:?}" "${WORKSPACE_ID:?}" "${ENROLLMENT_SECRET:?}"
 EMPLOYEE_EMAIL=${EMPLOYEE_EMAIL:-\$EMAIL}
+APP_ID=${APP_ID:-com.tryriot.agent}
 esc() { printf '%s' "$1" | sed -e 's/[&|\\]/\\&/g'; }
 sed -e "s|__TEAM_ID__|$(esc "$TEAM_ID")|g" \
+    -e "s|__APP_ID__|$(esc "$APP_ID")|g" \
     -e "s|__API_URL__|$(esc "$API_URL")|g" \
     -e "s|__WORKSPACE_ID__|$(esc "$WORKSPACE_ID")|g" \
     -e "s|__ENROLLMENT_SECRET__|$(esc "$ENROLLMENT_SECRET")|g" \

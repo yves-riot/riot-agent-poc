@@ -88,7 +88,8 @@ history from disk (`~/.codex/sessions`), not from the network.
    (Responses over WebSocket covers ChatGPT and Codex), scoped to the protected apps:
    1. TLS termination in the daemon, behind a development `HTTPS_PROXY` entry (done, below);
    2. Responses over WebSocket (done for Codex CLI, below; the ChatGPT app is still to test);
-   3. the `NETransparentProxyProvider` extension, which replaces the development entry;
+   3. the `NETransparentProxyProvider` extension, which replaces the development entry (code
+      and daemon side done, below; not run yet: it needs a signed build);
    4. protobuf over Connect RPC (Claude Desktop).
 
 ## Local gateway
@@ -313,4 +314,72 @@ not an event passes unchanged).
   the string literal around it.
 - The ChatGPT app is not tested yet: its title-generation request (finding 5) and its own
   WebSocket hosts (`ws.chatgpt.com`) are still to look at.
+
+## Network extension (`apple/RiotNE`)
+
+`com.tryriot.agent.network.systemextension`, a `NETransparentProxyProvider` in Riot.app
+(`WITH_NE=1 apple/build-app.sh`), activated by Riot.app like RiotES, configured by the MDM
+profile (`com.apple.vpn.managed`, `VPNType` `TransparentProxy`).
+
+- **Which flows.** The system hands it every outbound TCP and UDP flow to port 443. It claims
+  those whose process belongs to a protected app: the signing team id from the flow's audit
+  token, or the executable's folder for apps without one (the daemon's `esConfig`, as RiotES).
+  A flow is not claimed by process tree: Codex's app-server daemon is launched by launchd.
+  Other processes' flows, and every flow while the daemon is unreachable, are left to the
+  system.
+- **TCP.** A claimed flow becomes a CONNECT on `flows.sock` (next to the daemon's socket, mode
+  `0600`, root or the daemon's user only), to the name the app asked for when the system knows
+  it, else to the address. The flow is opened once the daemon answers `200`, then bytes go both
+  ways. `Riot-App` names the process for the daemon's log.
+- **The daemon's side** is the `HTTPS_PROXY` entry's: it reads the ClientHello, decrypts when
+  its server name (or the CONNECT host without one) is a policy host, drops the connection when
+  the CA cannot cover that host or the traffic to it is not TLS, and otherwise tunnels to the
+  CONNECT target, replaying the bytes it read. Ports other than 443 are tunnelled without a look.
+- **UDP.** A claimed flow is opened and closed: QUIC fails and the app falls back to TCP
+  (finding 8).
+- **Signing.** The `app-proxy-provider-systemextension` value of
+  `com.apple.developer.networking.networkextension`, and the app group its `NEMachServiceName`
+  is prefixed with, come with a Developer ID provisioning profile with the Network Extensions
+  capability: any team can create one, no request to Apple. Riot.app needs
+  `com.apple.developer.system-extension.install` to activate it, in the same way. Both
+  signatures also carry `com.apple.application-identifier` and
+  `com.apple.developer.team-identifier` (Xcode adds them), which tie them to their profiles.
+- **Logs.** `log stream --predicate 'subsystem == "com.tryriot.agent.network"'`: each claimed
+  flow (app, process, `host:port`) and each failure. NSLog's arguments show as `<private>` in a
+  system extension, so the extension logs through `os.Logger` with public fields that carry
+  no content.
+
+### Run in a VM
+
+Signed with a test team (`APP_ID=… TEAM_ID=… BUILD_NUMBER=… WITH_NE=1
+NE_PROVISIONING_PROFILE=… APP_PROVISIONING_PROFILE=… apple/build-app.sh`), on macOS 26 in
+the VM of `docs/es-vm.md`, without notarization and without `systemextensionsctl developer
+on`. The profile's payloads that need an MDM (extension policy, TCC, service management) are
+replaced by a manual approval of the extension in System Settings; the transparent proxy
+payload installs from a manual profile.
+
+- **The payload.** `NEConfiguration` rejects it ("The VPN service could not be created",
+  `unsupported authen type (null)` in mdmclient's log) without `AuthenticationMethod`, though
+  nothing authenticates. Installed, the session stays idle until something starts it:
+  `OnDemandEnabled` with a single `Connect` rule keeps it running.
+- **An update.** A new extension with the same `CFBundleVersion` is not taken; with a higher
+  one (`BUILD_NUMBER`), Riot.app's activation request replaces the running one without a prompt.
+- **Claude Code** (2.1.326, logged in, no `HTTPS_PROXY`): its flows to `api.anthropic.com`
+  are claimed by team id, decrypted and redacted; its other hosts (`mcp-proxy.anthropic.com`,
+  Datadog, `downloads.claude.ai`) are tunnelled. A flow to a bare IPv6 address was routed by
+  its ClientHello to `api.anthropic.com` and decrypted.
+- **Codex CLI** (0.169.0, logged in, without `--no-daemon`): the launchd-started `codex
+  app-server` is claimed by team id; its Responses WebSocket to `chatgpt.com` is decrypted and
+  rewritten; `ab.chatgpt.com`, `auth.openai.com` and the `oaiusercontent.com` CDNs are
+  tunnelled.
+- **False positives** in the apps' own prompts, as names: "Claude Code", "Claude Opus",
+  "Claude Agent", spans such as "Claude Tag (Claude" or a whole Markdown link to
+  `claude.com/claude-code`, "mark specs"; in Codex's, "Atkinson Hyperlegible Next" (a font)
+  and "Skip action". For sonar-detection.
+- **Other processes'** flows (Apple's daemons, TCP and QUIC) are rejected by the extension and
+  go out untouched. Some claimed flows are aborted by the app before the daemon answers: the
+  losers of its parallel IPv4/IPv6 connects.
+
+To check: the ChatGPT app (its title request, `ws.chatgpt.com`), Claude Desktop (step 4), the
+fallback from QUIC, and the daemon down.
 

@@ -4,6 +4,7 @@
   Riot agent: everything the agent needs, pre-approved, so users see no prompt.
   Deploy this profile BEFORE Riot.pkg. Replace the __PLACEHOLDERS__ (render-profile.sh does it).
     __TEAM_ID__            Riot's Apple Developer team id
+    __APP_ID__             Riot.app's bundle id (com.tryriot.agent unless built with another APP_ID)
     __API_URL__            e.g. https://parrot.tryriot.com/portal
     __WORKSPACE_ID__       the customer's workspace id
     __ENROLLMENT_SECRET__  the workspace's rbx_ secret (same as the browser extension's)
@@ -23,7 +24,7 @@
   <key>PayloadContent</key>
   <array>
 
-    <!-- 1. Endpoint Security system extension: allowed, and not removable by the user. -->
+    <!-- 1. System extensions (Endpoint Security, network): allowed, and not removable by the user. -->
     <dict>
       <key>PayloadType</key><string>com.apple.system-extension-policy</string>
       <key>PayloadIdentifier</key><string>com.tryriot.agent.profile.sysext</string>
@@ -31,11 +32,11 @@
       <key>PayloadVersion</key><integer>1</integer>
       <key>AllowUserOverrides</key><false/>
       <key>AllowedSystemExtensions</key>
-      <dict><key>__TEAM_ID__</key><array><string>com.tryriot.agent.es</string></array></dict>
+      <dict><key>__TEAM_ID__</key><array><string>com.tryriot.agent.es</string><string>__APP_ID__.network</string></array></dict>
       <key>AllowedSystemExtensionTypes</key>
-      <dict><key>__TEAM_ID__</key><array><string>EndpointSecurityExtension</string></array></dict>
+      <dict><key>__TEAM_ID__</key><array><string>EndpointSecurityExtension</string><string>NetworkExtension</string></array></dict>
       <key>NonRemovableSystemExtensions</key>
-      <dict><key>__TEAM_ID__</key><array><string>com.tryriot.agent.es</string></array></dict>
+      <dict><key>__TEAM_ID__</key><array><string>com.tryriot.agent.es</string><string>__APP_ID__.network</string></array></dict>
     </dict>
 
     <!-- 2. Privacy (PPPC): Full Disk Access for the ES extension (required for any ES client)
@@ -96,7 +97,36 @@
       <key>EmployeeEmail</key><string>__EMPLOYEE_EMAIL__</string>
     </dict>
 
-    <!-- 5. Pasteboard privacy ("Paste from Other Apps", macOS 15.4+): no PPPC key is known for
+    <!-- 5. The network extension's transparent proxy: it sees the TCP and UDP flows to port 443
+            and claims those of protected apps (docs/network-interception.md). The TLS of the AI
+            hosts is terminated with the Riot CA, which a com.apple.security.root payload must
+            install (see "To decide: the CA in production"). -->
+    <dict>
+      <key>PayloadType</key><string>com.apple.vpn.managed</string>
+      <key>PayloadIdentifier</key><string>com.tryriot.agent.profile.proxy</string>
+      <key>PayloadUUID</key><string>D669F292-F592-4F34-BC3A-EF66A25DF427</string>
+      <key>PayloadVersion</key><integer>1</integer>
+      <key>UserDefinedName</key><string>Riot</string>
+      <key>VPNType</key><string>TransparentProxy</string>
+      <!-- The app that contains the provider. -->
+      <key>VPNSubType</key><string>__APP_ID__</string>
+      <key>TransparentProxy</key>
+      <dict>
+        <!-- Required although nothing authenticates: without it, NEConfiguration rejects the
+             payload ("unsupported authen type"). -->
+        <key>AuthenticationMethod</key><string>Password</string>
+        <key>ProviderBundleIdentifier</key><string>__APP_ID__.network</string>
+        <key>ProviderDesignatedRequirement</key>
+        <string>identifier "__APP_ID__.network" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = "__TEAM_ID__"</string>
+        <key>RemoteAddress</key><string>127.0.0.1</string>
+        <!-- Always on: without an on-demand rule the session stays idle until something starts it. -->
+        <key>OnDemandEnabled</key><integer>1</integer>
+        <key>OnDemandRules</key>
+        <array><dict><key>Action</key><string>Connect</string></dict></array>
+      </dict>
+    </dict>
+
+    <!-- 6. Pasteboard privacy ("Paste from Other Apps", macOS 15.4+): no PPPC key is known for
             it as of this writing; see README "Open questions". If Apple adds one, it goes here. -->
   </array>
 </dict>

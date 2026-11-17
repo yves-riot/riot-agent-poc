@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Bind the signature to the embedded provisioning profile (Xcode adds them itself). -->
+  <key>com.apple.application-identifier</key><string>__TEAM_ID__.__APP_ID__.network</string>
+  <key>com.apple.developer.team-identifier</key><string>__TEAM_ID__</string>
+  <!-- Available to any Developer ID team (no request to Apple), through a provisioning profile
+       with the Network Extensions capability. -->
+  <key>com.apple.developer.networking.networkextension</key>
+  <array><string>app-proxy-provider-systemextension</string></array>
+  <key>com.apple.security.application-groups</key>
+  <array><string>__TEAM_ID__.__APP_ID__</string></array>
+</dict>
+</plist>
