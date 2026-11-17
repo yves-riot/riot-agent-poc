@@ -20,6 +20,9 @@ open: it also covers text typed in the app, and every way into it at once.
   (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`), which forwards over TLS. No certificate, no pinning
   question, and the API formats are documented. Implemented for the Anthropic API:
   [Local gateway](#local-gateway).
+- The gateway's protocol adapters do not depend on how traffic reaches them. Until the
+  transparent proxy exists, the gateway is also an `HTTPS_PROXY` for development, which
+  terminates TLS the same way: [TLS termination](#tls-termination-https_proxy-entry).
 
 ## Measurements (Nov 2026, macOS 27.2)
 
@@ -29,7 +32,7 @@ mitmproxy and a throwaway CA, removed afterwards. Versions: Claude Code 2.1.325,
 
 | Client         | How its traffic was routed                                                                                 | Accepts a CA from the system keychain                                                                                | Conversation format                                                                                           |
 | -------------- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Claude Code    | `HTTPS_PROXY`; or `ANTHROPIC_BASE_URL` to a plain-HTTP local endpoint, no CA                                | Its own store: rejects the CA unless given `NODE_EXTRA_CA_CERTS` (keychain trust not measured)                       | JSON `POST /v1/messages`, SSE response                                                                        |
+| Claude Code    | `HTTPS_PROXY`; or `ANTHROPIC_BASE_URL` to a plain-HTTP local endpoint, no CA                                | Yes (2.1.326, measured with the Riot CA); an untrusted CA needs `NODE_EXTRA_CA_CERTS`                                | JSON `POST /v1/messages`, SSE response                                                                        |
 | Codex CLI      | `HTTPS_PROXY`                                                                                              | Yes                                                                                                                  | WebSocket `chatgpt.com/backend-api/codex/responses`, Responses API events                                     |
 | Claude Desktop | `--proxy-server`                                                                                           | Yes. It refuses chains holding keys from a fixed list (`setCertificateVerifyProc`), and pins nothing                 | Binary protobuf over Connect RPC: `claude.ai/claudeai-rpc/…ConversationService/PerformAction`, `StreamTimeline` |
 | ChatGPT        | The conversation goes through an embedded `codex` app server, which ignores the app's `--proxy-server`; it needed `HTTPS_PROXY` | Yes                                                                                                                  | The same WebSocket as Codex                                                                                   |
@@ -40,8 +43,8 @@ mitmproxy and a throwaway CA, removed afterwards. Versions: Claude Code 2.1.325,
    directly while the app itself went through the proxy: the request is made by a child process
    (`Contents/Resources/codex-cli/CodexCLI.app`). The transparent proxy must match the app and
    its descendants, as RiotES does.
-2. **One CA in the system keychain covers the desktop apps and Codex.** No client pinned. Claude
-   Code keeps its own store; the gateway avoids the question.
+2. **One CA in the keychain covers every client measured**, Claude Code included (2.1.326). No
+   client pinned.
 3. **Three protocols, not one:**
    - Anthropic Messages API, JSON and SSE (Claude Code);
    - Responses API events over a WebSocket (Codex and ChatGPT: one adapter, two products);
@@ -77,7 +80,11 @@ history from disk (`~/.codex/sessions`), not from the network.
 2. Local gateway for the Anthropic API, Claude Code first: small, reuses `redact` and
    `detokenize`, and proves streaming detokenization.
 3. Transparent proxy and TLS termination for the desktop apps, one protocol adapter at a time
-   (Responses over WebSocket covers ChatGPT and Codex), scoped to the protected apps.
+   (Responses over WebSocket covers ChatGPT and Codex), scoped to the protected apps:
+   1. TLS termination in the daemon, behind a development `HTTPS_PROXY` entry (done, below);
+   2. Responses over WebSocket (Codex CLI, then ChatGPT);
+   3. the `NETransparentProxyProvider` extension, which replaces the development entry;
+   4. protobuf over Connect RPC (Claude Desktop).
 
 ## Local gateway
 
@@ -109,6 +116,15 @@ detokenized answers and resends them as history.
 - Not touched: `thinking` and `redacted_thinking` blocks (signed: the API rejects a thinking
   block that differs from what it produced, so they keep the tokens the model wrote), images,
   base64 pdfs, tool definitions.
+- Not touched either: the head of `system` up to the last block cached with
+  `scope: "global"`. That scope shares the prompt cache across every API user, so the client
+  declares the text identical for everyone: its own fixed prompt, not user data. The API also
+  rejects a global block whose preceding blocks changed (`cache_control.scope: "global" is only
+  valid when every preceding block is also globally scoped`): Claude Code's identity line, "You
+  are a Claude agent, built on Anthropic's Claude Agent SDK.", became `[NAME_7]` / `[NAME_8]`
+  and every request failed. Claude Code sends this scope when it talks to `api.anthropic.com`,
+  not to a custom base URL. The environment block that follows (paths, git status, the user's
+  email) is not globally scoped and is redacted.
 
 **What is detokenized.** SSE `text_delta` and `input_json_delta` (values JSON-escaped inside the
 tool input), with a per-block detokenizer that holds back a possible token prefix and flushes it
@@ -152,13 +168,65 @@ share its screens.
 
 ### Limits
 
-- **"Claude" is a person name to the engine.** In Claude Code's own prompt, "Claude Code"
-  becomes `[NAME_4]` and "Claude Agent SDK" `[NAME_2]`, along with other false positives
-  ("mark specs"). The model then reads about itself through tokens, and the first report of a
-  session counts these names. The fix belongs in `sonar-detection`, shared with the extension.
+- **"Claude" is a person name to the engine.** Through the base URL, Claude Code's own prompt
+  had "Claude Code" as `[NAME_4]` and "Claude Agent SDK" as `[NAME_2]`, along with other false
+  positives ("mark specs"); the first report of a session counts these names. Its fixed prompt
+  is now left alone when globally cached (above), but the same words in the rest of the request
+  are still caught. The fix belongs in `sonar-detection`, shared with the extension.
 - The model may comment on what it receives ("this looks like a masking marker"); once
   detokenized, the comment reads oddly.
 - An OAuth token refresh changes the scope: the history is redacted and reported again once.
 - Tokens written markdown-escaped (`\[EMAIL\_1\]`) are not detokenized in the stream.
 - The engine has one thread: a large first request delays concurrent pastes and file scans.
 - No WebSocket upgrade, and only the Anthropic API so far (`/anthropic`).
+- **Nothing is protected before the first policy sync.** The daemon keeps the policy in memory
+  only: after a restart, until parrot answers, no host is redacted and CONNECTs are tunnelled
+  untouched (measured: a Claude Code request started with the daemon went out unredacted). The
+  same holds for pastes and file opens. The last policy should be persisted and used at start.
+
+## TLS termination (`HTTPS_PROXY` entry)
+
+With `RIOT_DEV_PROXY=1` (on in `dev/run-dev.sh`), the gateway's port also answers `CONNECT`.
+It stands in for the transparent proxy, which will hand the daemon the same flows; everything
+after the TLS handshake is shared with the base URL entry.
+
+- **Which connections.** A `CONNECT` to port 443 of a host the policy lists in `api_hosts` is
+  answered with a certificate from the Riot CA, and its requests go through the same relay as
+  `/anthropic/*` (redaction on `/v1/messages`, other paths as they are). Any other `CONNECT`, or
+  any host when monitoring is off, is a plain tunnel: nothing is decrypted.
+- **The CA.** `gateway-ca.pem` and `gateway-ca-key.pem` (mode `0600`) in the data directory,
+  created at first start, valid one year. It is name-constrained to `anthropic.com`,
+  `claude.ai`, `openai.com` and `chatgpt.com` (critical `nameConstraints`, `pathlen:0`): even
+  with its key, nothing it signs is valid for another site. A policy host outside these domains
+  is refused (`400`), not tunnelled unchecked.
+- **Leaves.** One P-256 key per daemon run, a certificate per host valid 7 days, reissued after
+  a day; ALPN offers `http/1.1` only.
+
+```sh
+dev/run-dev.sh
+HTTPS_PROXY=http://127.0.0.1:7591 NODE_EXTRA_CA_CERTS=$TMPDIR/riot-dev/gateway-ca.pem claude
+```
+
+`RIOT_GATEWAY_UPSTREAM` applies here too, to see what leaves the gateway.
+
+### Measured (Claude Code 2.1.326, Haiku)
+
+- Claude Code accepted the Riot CA, name constraints included, both through
+  `NODE_EXTRA_CA_CERTS` and, with no variable, from the login keychain (trusted for the test,
+  then removed). Its requests to `api.anthropic.com` went through it; Datadog and
+  `mcp-proxy.anthropic.com` went through tunnels.
+- Upstream, `/v1/messages` held tokens and neither the email nor the IBAN; the identity line
+  arrived unchanged. The client printed the real email; asked to write it backwards, the model
+  answered that it only saw a placeholder.
+- The other requests to `api.anthropic.com` (`/api/event_logging/v2/batch` up to 548 KB,
+  `/api/eval/…`, `/api/oauth/…`) are forwarded as is: in this run none held the prompt's email
+  or a token.
+
+### To decide: the CA in production
+
+The development CA lives on the machine that uses it, and is trusted by hand. Under MDM, the CA
+certificate is pushed by a profile (`com.apple.security.root`), so it is known in advance and
+the same for every device, while its key must not be shared by every device. One shape: a root
+per organization, kept by parrot, in the MDM profile; each daemon generates its key, sends a
+CSR, and gets back an intermediate CA, name-constrained to the AI domains, whose key never
+leaves the Mac.

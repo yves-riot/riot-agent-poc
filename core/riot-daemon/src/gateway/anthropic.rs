@@ -5,6 +5,12 @@
 //! detokenized answers and resends them as history, so assistant text and tool calls come back
 //! holding the real values. Thinking blocks pass untouched both ways: they are signed, and the
 //! API rejects a thinking block that differs from what it produced.
+//!
+//! The one exception is the client's own prompt at the head of `system`: up to the last block
+//! cached with `scope: "global"`. That scope shares the cache across every API user, so the
+//! client declares that text the same for everyone, not user data; and the API only accepts it
+//! when what precedes it is unchanged (Claude Code's identity line, which the engine reads as
+//! person names, made the request fail).
 
 use std::collections::HashMap;
 
@@ -23,6 +29,10 @@ pub fn redact_request<E>(body: &mut Value, redact: &mut dyn FnMut(&str) -> Resul
     let Value::Object(fields) = body else { return Ok(()) };
     for (key, value) in fields.iter_mut() {
         match (key.as_str(), value) {
+            ("system", Value::Array(blocks)) => {
+                let shared = blocks.iter().rposition(globally_cached).map_or(0, |i| i + 1);
+                blocks[shared..].iter_mut().for_each(|b| block(b, &mut slots));
+            }
             ("system", system) => content(system, &mut slots),
             ("messages", Value::Array(messages)) => {
                 for message in messages {
@@ -38,6 +48,10 @@ pub fn redact_request<E>(body: &mut Value, redact: &mut dyn FnMut(&str) -> Resul
         *slot = redact(slot)?;
     }
     Ok(())
+}
+
+fn globally_cached(block: &Value) -> bool {
+    block.pointer("/cache_control/scope").and_then(Value::as_str) == Some("global")
 }
 
 /// A `content` field: a string, or an array of content blocks.
@@ -273,6 +287,25 @@ mod tests {
         assert_eq!(body["messages"][1]["content"][2]["input"]["lines"][0], "[EMAIL_1]");
         assert_eq!(body["messages"][2]["content"][2]["source"]["data"], "[EMAIL_1]");
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn the_globally_cached_head_of_system_is_left_as_sent() {
+        let mail = "jean.dupont@example.com";
+        let global = json!({ "type": "ephemeral", "scope": "global" });
+        let mut body = json!({
+            "system": [
+                { "type": "text", "text": "x-anthropic-billing-header: cc_version=1" },
+                { "type": "text", "text": format!("You are a Claude agent ({mail} stands in for a false positive).") },
+                { "type": "text", "text": "Static instructions.", "cache_control": global },
+                { "type": "text", "text": format!("Environment: user {mail}"), "cache_control": { "type": "ephemeral" } }
+            ],
+            "messages": []
+        });
+        let sent = body.clone();
+        redact_request(&mut body, &mut tokenize).unwrap();
+        assert_eq!(body["system"].as_array().unwrap()[..3], sent["system"].as_array().unwrap()[..3], "the shared prefix is left as sent");
+        assert_eq!(body["system"][3]["text"], "Environment: user [EMAIL_1]");
     }
 
     #[test]

@@ -5,8 +5,14 @@
 //!
 //! No certificate is involved: the client speaks plain HTTP to loopback. Bodies and headers are
 //! never logged, they carry prompts and credentials.
+//!
+//! For development, the same port is also an `HTTPS_PROXY` (`RIOT_DEV_PROXY=1`): a CONNECT to a
+//! host the policy lists is answered with a certificate from the Riot CA ([`ca`]) and its
+//! requests take the same path as the base URL's; any other CONNECT is tunnelled untouched. It
+//! stands in for the transparent proxy, which will hand the daemon the same TLS flows.
 
 mod anthropic;
+mod ca;
 mod tokens;
 
 use std::collections::{HashMap, VecDeque};
@@ -21,13 +27,16 @@ use http_body_util::combinators::UnsyncBoxBody;
 use http_body_util::{BodyExt, Full, Limited, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::header::{self, HeaderMap, HeaderName, HeaderValue};
-use hyper::{Request, Response, StatusCode};
+use hyper::upgrade::Upgraded;
+use hyper::{Method, Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
 use riot_detect::{Detection, Engine, Options};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::agent::{Agent, Target};
+use ca::Authority;
 
 type Body = UnsyncBoxBody<Bytes, std::io::Error>;
 
@@ -51,13 +60,24 @@ pub struct Gateway {
     /// Replaces `https://<host>`: a local server in tests, or `RIOT_GATEWAY_UPSTREAM` to put an
     /// inspecting proxy between the gateway and the API.
     upstream_base: Option<String>,
+    /// Set when the `HTTPS_PROXY` entry is on.
+    authority: Option<Arc<Authority>>,
 }
 
 pub async fn serve(agent: Arc<Agent>, addr: SocketAddr) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let upstream = upstream_override()?;
-    tracing::info!(%addr, upstream = upstream.as_deref().unwrap_or("https://<api host>"), "gateway listening");
-    Gateway::new(agent, upstream)?.run(listener).await
+    let authority = match std::env::var_os("RIOT_DEV_PROXY").is_some_and(|v| v == "1") {
+        true => Some(Arc::new(Authority::load_or_create(&agent.paths.data_dir)?)),
+        false => None,
+    };
+    tracing::info!(
+        %addr,
+        upstream = upstream.as_deref().unwrap_or("https://<api host>"),
+        proxy_ca = authority.as_ref().map(|a| a.cert_path().display().to_string()),
+        "gateway listening"
+    );
+    Gateway::new(agent, upstream, authority)?.run(listener).await
 }
 
 /// `RIOT_GATEWAY_UPSTREAM`, for development: e.g. `http://127.0.0.1:18081`, a mitmproxy in
@@ -73,12 +93,12 @@ fn upstream_override() -> anyhow::Result<Option<String>> {
 }
 
 impl Gateway {
-    fn new(agent: Arc<Agent>, upstream_base: Option<String>) -> anyhow::Result<Arc<Self>> {
+    fn new(agent: Arc<Agent>, upstream_base: Option<String>, authority: Option<Arc<Authority>>) -> anyhow::Result<Arc<Self>> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(10))
             .build()?;
-        Ok(Arc::new(Self { agent, client, cache: Mutex::new(Cache::default()), upstream_base }))
+        Ok(Arc::new(Self { agent, client, cache: Mutex::new(Cache::default()), upstream_base, authority }))
     }
 
     async fn run(self: Arc<Self>, listener: TcpListener) -> anyhow::Result<()> {
@@ -90,8 +110,8 @@ impl Gateway {
                     let gateway = gateway.clone();
                     async move { Ok::<_, Infallible>(gateway.handle(req).await) }
                 });
-                let io = hyper_util::rt::TokioIo::new(stream);
-                if let Err(e) = hyper::server::conn::http1::Builder::new().serve_connection(io, service).await {
+                let io = TokioIo::new(stream);
+                if let Err(e) = hyper::server::conn::http1::Builder::new().serve_connection(io, service).with_upgrades().await {
                     tracing::debug!(error = %e, "gateway connection ended");
                 }
             });
@@ -99,17 +119,80 @@ impl Gateway {
     }
 
     async fn handle(self: Arc<Self>, req: Request<Incoming>) -> Response<Body> {
+        match req.method() {
+            &Method::CONNECT => self.connect(req).await.unwrap_or_else(GatewayError::response),
+            _ => self.handle_request(req, None).await,
+        }
+    }
+
+    /// `origin` is the host a decrypted CONNECT tunnel leads to; `None` on the base URL entry.
+    async fn handle_request(&self, req: Request<Incoming>, origin: Option<Arc<str>>) -> Response<Body> {
         let (method, path) = (req.method().clone(), req.uri().path().to_owned());
         let started = Instant::now();
-        let response = self.forward(req).await.unwrap_or_else(|e| e.response());
-        tracing::info!(%method, path, status = response.status().as_u16(), ms = started.elapsed().as_millis() as u64, "gateway");
+        let result = match &origin {
+            Some(host) => self.relay(req, host, &path).await,
+            None => self.forward(req).await,
+        };
+        let response = result.unwrap_or_else(GatewayError::response);
+        let host = origin.as_deref().unwrap_or_default();
+        tracing::info!(%method, host, path, status = response.status().as_u16(), ms = started.elapsed().as_millis() as u64, "gateway");
         response
     }
 
+    /// The `HTTPS_PROXY` entry: TLS is terminated only for a host the policy lists, with a
+    /// certificate from the Riot CA; anything else is tunnelled as is.
+    async fn connect(self: Arc<Self>, req: Request<Incoming>) -> Result<Response<Body>, GatewayError> {
+        let authority = self.authority.clone().ok_or_else(|| GatewayError::BadRequest("the proxy entry is off (RIOT_DEV_PROXY)".into()))?;
+        let target = req.uri().authority().ok_or_else(|| GatewayError::BadRequest("CONNECT needs host:port".into()))?;
+        let (host, port) = (target.host().to_ascii_lowercase(), target.port_u16().unwrap_or(443));
+        let intercept = port == 443 && self.agent.api_target(&host).is_some();
+        tracing::info!(host, port, intercept, "gateway connect");
+        let next = if intercept {
+            // A host to protect that the CA cannot cover is refused, not tunnelled unchecked.
+            Next::Tls(authority.server_config(&host).map_err(|e| GatewayError::Blocked(e.to_string()))?)
+        } else {
+            Next::Tunnel(TcpStream::connect((host.as_str(), port)).await.map_err(|e| GatewayError::Upstream(e.to_string()))?)
+        };
+        tokio::spawn(async move {
+            let client = match hyper::upgrade::on(req).await {
+                Ok(upgraded) => TokioIo::new(upgraded),
+                Err(e) => return tracing::debug!(error = %e, "gateway connect upgrade failed"),
+            };
+            let ended = match next {
+                Next::Tls(config) => self.serve_tls(client, config, host.into()).await,
+                Next::Tunnel(mut server) => {
+                    let mut client = client;
+                    tokio::io::copy_bidirectional(&mut client, &mut server).await.map(drop).map_err(Into::into)
+                }
+            };
+            if let Err(e) = ended {
+                tracing::debug!(error = %e, "gateway tunnel ended");
+            }
+        });
+        Ok(Response::new(full(Bytes::new())))
+    }
+
+    async fn serve_tls(self: Arc<Self>, client: TokioIo<Upgraded>, config: Arc<rustls::ServerConfig>, host: Arc<str>) -> anyhow::Result<()> {
+        let tls = tokio_rustls::TlsAcceptor::from(config).accept(client).await?;
+        let service = hyper::service::service_fn(move |req| {
+            let (gateway, host) = (self.clone(), host.clone());
+            async move { Ok::<_, Infallible>(gateway.handle_request(req, Some(host)).await) }
+        });
+        hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls), service).await?;
+        Ok(())
+    }
+
+    /// The base URL entry: `/anthropic/v1/messages` → `api.anthropic.com`, `/v1/messages`.
     async fn forward(&self, req: Request<Incoming>) -> Result<Response<Body>, GatewayError> {
         let (prefix, rest) = req.uri().path().trim_start_matches('/').split_once('/').ok_or(GatewayError::NotFound)?;
         let host = UPSTREAMS.iter().find(|(p, _)| *p == prefix).map(|(_, h)| *h).ok_or(GatewayError::NotFound)?;
         let api_path = format!("/{rest}");
+        self.relay(req, host, &api_path).await
+    }
+
+    /// Sends a request on to `host`, redacting it on the way out and detokenizing the answer
+    /// when the policy protects that host.
+    async fn relay(&self, req: Request<Incoming>, host: &str, api_path: &str) -> Result<Response<Body>, GatewayError> {
         let base = self.upstream_base.clone().unwrap_or_else(|| format!("https://{host}"));
         let url = match req.uri().query() {
             Some(q) => format!("{base}{api_path}?{q}"),
@@ -117,7 +200,7 @@ impl Gateway {
         };
 
         let target = self.agent.api_target(host);
-        let rewrite = target.is_some() && req.method() == hyper::Method::POST && anthropic::is_messages_path(&api_path);
+        let rewrite = target.is_some() && req.method() == Method::POST && anthropic::is_messages_path(api_path);
         let method = req.method().clone();
         let mut headers = forwarded_headers(req.headers());
         let scope = target.as_ref().map(|t| scope(&t.service_id, req.headers()));
@@ -290,6 +373,11 @@ impl Cache {
     }
 }
 
+enum Next {
+    Tls(Arc<rustls::ServerConfig>),
+    Tunnel(TcpStream),
+}
+
 fn forwarded_headers(headers: &HeaderMap) -> HeaderMap {
     let mut out = headers.clone();
     for name in HOP_BY_HOP.iter().chain(&["host", "content-length"]) {
@@ -400,14 +488,45 @@ mod tests {
     async fn gateway(agent: Arc<Agent>, upstream: String) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/anthropic", listener.local_addr().unwrap());
-        tokio::spawn(Gateway::new(agent, Some(upstream)).unwrap().run(listener));
+        tokio::spawn(Gateway::new(agent, Some(upstream), None).unwrap().run(listener));
         url
+    }
+
+    /// The gateway with its `HTTPS_PROXY` entry on, and the root its certificates chain to.
+    async fn proxy(agent: Arc<Agent>, upstream: String) -> (SocketAddr, reqwest::Certificate) {
+        let authority = Arc::new(Authority::load_or_create(&agent.paths.data_dir).unwrap());
+        let root = reqwest::Certificate::from_der(authority.root()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(Gateway::new(agent, Some(upstream), Some(authority)).unwrap().run(listener));
+        (addr, root)
+    }
+
+    /// Sends a raw CONNECT; returns the stream and the response's status line.
+    async fn raw_connect(proxy: SocketAddr, target: &str) -> (TcpStream, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = TcpStream::connect(proxy).await.unwrap();
+        stream.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes()).await.unwrap();
+        let mut head = vec![];
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            if stream.read(&mut byte).await.unwrap() == 0 {
+                break;
+            }
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head).unwrap();
+        (stream, head.lines().next().unwrap_or_default().to_owned())
     }
 
     /// What the client reads: the streamed text, rebuilt.
     async fn ask(url: &str, text: &str) -> String {
+        ask_with(&reqwest::Client::new(), url, text).await
+    }
+
+    async fn ask_with(client: &reqwest::Client, url: &str, text: &str) -> String {
         let body = json!({ "model": "m", "stream": true, "messages": [{ "role": "user", "content": text }] });
-        let sse = reqwest::Client::new()
+        let sse = client
             .post(format!("{url}/v1/messages"))
             .header("x-api-key", "sk-test")
             .json(&body)
@@ -452,5 +571,53 @@ mod tests {
         assert_eq!(ask(&url, &text).await, text);
         assert!(seen.lock().unwrap()[0].to_string().contains(MAIL));
         assert_eq!(agent.spool.len(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_proxy_decrypts_a_policy_host_with_the_riot_ca() {
+        let agent = agent("proxy", &["api.anthropic.com"]);
+        let (upstream, seen) = fake_api().await;
+        let (proxy, root) = proxy(agent.clone(), upstream).await;
+        // The client trusts the Riot root and nothing else, and checks the name: the
+        // certificate must be valid for api.anthropic.com under the root's name constraints.
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::https(format!("http://{proxy}")).unwrap())
+            .tls_certs_only([root])
+            .build()
+            .unwrap();
+        let text = format!("Mail {MAIL}, IBAN {IBAN}.");
+
+        assert_eq!(ask_with(&client, "https://api.anthropic.com", &text).await, text);
+        let sent = seen.lock().unwrap()[0].to_string();
+        assert!(!sent.contains(MAIL) && sent.contains("[EMAIL"), "upstream saw: {sent}");
+        assert_eq!(agent.spool.len(), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_proxy_tunnels_other_hosts_untouched() {
+        let agent = agent("tunnel", &["api.anthropic.com"]);
+        let (upstream, seen) = fake_api().await;
+        let (proxy, _) = proxy(agent.clone(), upstream.clone()).await;
+        let target = upstream.trim_start_matches("http://");
+        let (stream, status) = raw_connect(proxy, target).await;
+        assert!(status.contains(" 200 "), "{status}");
+
+        // Plain HTTP inside the tunnel reaches the server as sent.
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.unwrap();
+        tokio::spawn(conn);
+        let body = json!({ "model": "m", "messages": [{ "role": "user", "content": format!("Mail {MAIL}") }] });
+        let req = Request::post("/v1/messages").header(header::HOST, target).body(full(body.to_string().into())).unwrap();
+        assert_eq!(sender.send_request(req).await.unwrap().status(), StatusCode::OK);
+        assert!(seen.lock().unwrap()[0].to_string().contains(MAIL));
+        assert_eq!(agent.spool.len(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_policy_host_the_ca_cannot_cover_is_refused() {
+        let agent = agent("refused", &["example.com"]);
+        let (upstream, _) = fake_api().await;
+        let (proxy, _) = proxy(agent, upstream).await;
+        let (_, status) = raw_connect(proxy, "example.com:443").await;
+        assert!(status.contains(" 400 "), "{status}");
     }
 }
