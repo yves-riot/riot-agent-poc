@@ -313,8 +313,9 @@ not an event passes unchanged).
 - A value written into the `exec` tool's code is inserted as is: one holding a quote would break
   the string literal around it.
 - The ChatGPT app's conversation and title go through its embedded `codex` app server, so this
-  adapter covers them ([its run](#run-in-a-vm)). Requests the app's own window makes to
-  `chat.openai.com` are tunnelled, not read.
+  adapter covers them ([its run](#run-in-a-vm)). The window's own hosts carry no prompt:
+  `chat.openai.com` takes telemetry, `ws.chatgpt.com` is a per-user notification socket. The
+  policy can leave them tunnelled.
 
 ## Network extension (`apple/RiotNE`)
 
@@ -392,6 +393,14 @@ payload installs from a manual profile.
   the title "Répéter email et IBAN". The window process (`com.openai.codex.helper`) reached
   `chatgpt.com` by bare address, routed by its ClientHello and decrypted, and
   `chat.openai.com`, tunnelled. No flow to `ws.chatgpt.com` in this run.
+- **What else the ChatGPT app sends**, with `chat.openai.com` and `ws.chatgpt.com` added to the
+  policy and a `debug-redaction` daemon checking what it passes on unread: the same prompt's
+  values were in none of these requests or messages. `chat.openai.com` only took
+  `POST /ces/v1/telemetry/intake`; `ws.chatgpt.com` was `GET /p33/ws/user/<user id>`, a
+  WebSocket the window keeps open. What the detector found there is the app's own data: the
+  signed-in account's email in `chatgpt.com/ces/v1/rgstr`, the session token in
+  `/api/auth/link-session`, and as phone numbers, version numbers (`26.1111.71025`) and IP
+  addresses in the telemetry. Six `rgstr` bodies were too large to check whole.
 - **False positives** in the apps' own prompts, as names: "Claude Code", "Claude Opus",
   "Claude Agent", spans such as "Claude Tag (Claude" or a whole Markdown link to
   `claude.com/claude-code`, "mark specs"; in Codex's, "Atkinson Hyperlegible Next" (a font)
@@ -417,7 +426,9 @@ To check: Claude Desktop (step 4).
 `cargo build -p riot-daemon --features debug-redaction` logs, under
 `riot_daemon::debug_redaction`, each token in a text as it is sent with the value it stands
 for (`sent`), any detected value still in that text (`sent in clear`, an error), and each token
-of a response with the value given back (`restored`). Without the feature (the default, and
-`apple/build-app.sh`), the code is not in the binary. A text served from the gateway's cache
+of a response with the value given back (`restored`). A request body or client WebSocket
+message to a policy host that no adapter reads is passed through the detector, and each value
+found in it is logged (`forwarded with a detected value`): what else carries a prompt.
+Without the feature (the default, and `apple/build-app.sh`), the code is not in the binary. A text served from the gateway's cache
 (already seen in the conversation) is not logged again.
 

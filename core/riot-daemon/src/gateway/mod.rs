@@ -360,6 +360,11 @@ impl Gateway {
                     let scope = scope(&target.service_id, req.headers());
                     self.responses_hooks(target, scope)
                 }
+                #[cfg(feature = "debug-redaction")]
+                (Some(target), _) => websocket::Hooks {
+                    up: debug_redaction::watched_up(self.agent.engine.clone(), target.options, host, api_path),
+                    ..websocket::Hooks::passthrough()
+                },
                 _ => websocket::Hooks::passthrough(),
             };
             return websocket::relay(req, &url, hooks).await;
@@ -384,7 +389,14 @@ impl Gateway {
                 headers.remove(header::ACCEPT_ENCODING);
                 self.redact(body, api, target, scope).await?
             }
-            _ => body,
+            _ => {
+                #[cfg(feature = "debug-redaction")]
+                if let Some(target) = &target {
+                    let encoding = headers.get(header::CONTENT_ENCODING).cloned();
+                    debug_redaction::forwarded_body(&self.agent.engine, &target.options, host, api_path, encoding, body.clone());
+                }
+                body
+            }
         };
 
         let upstream = self
