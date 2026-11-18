@@ -312,8 +312,9 @@ not an event passes unchanged).
   detokenized before it runs.
 - A value written into the `exec` tool's code is inserted as is: one holding a quote would break
   the string literal around it.
-- The ChatGPT app is not tested yet: its title-generation request (finding 5) and its own
-  WebSocket hosts (`ws.chatgpt.com`) are still to look at.
+- The ChatGPT app's conversation and title go through its embedded `codex` app server, so this
+  adapter covers them ([its run](#run-in-a-vm)). Requests the app's own window makes to
+  `chat.openai.com` are tunnelled, not read.
 
 ## Network extension (`apple/RiotNE`)
 
@@ -383,22 +384,29 @@ payload installs from a manual profile.
 - **Both**, with a prompt holding an email and an IBAN, checked with a `debug-redaction`
   daemon (below): each value left as its token in every request that carried it, none left in
   clear, and each token of the answer was restored; the app showed the real values.
+- **The ChatGPT app** (26.1111.71025, logged in; signed by OpenAI's team, as Codex): a new
+  conversation with the same prompt opened two Responses WebSockets to `chatgpt.com` at once
+  from the embedded `codex` app server (by their timing, the answer and the title), then a third; each carried
+  the values as tokens only, none was sent in clear, and the app showed the real values and
+  the title "Répéter email et IBAN". The window process (`com.openai.codex.helper`) reached
+  `chatgpt.com` by bare address, routed by its ClientHello and decrypted, and
+  `chat.openai.com`, tunnelled. No flow to `ws.chatgpt.com` in this run.
 - **False positives** in the apps' own prompts, as names: "Claude Code", "Claude Opus",
   "Claude Agent", spans such as "Claude Tag (Claude" or a whole Markdown link to
   `claude.com/claude-code`, "mark specs"; in Codex's, "Atkinson Hyperlegible Next" (a font)
-  and "Skip action". For sonar-detection.
+  and "Skip action"; in the ChatGPT app's, a version number (`26.1116.12010`) as a phone number.
+  For sonar-detection.
 - **Other processes'** flows (Apple's daemons, TCP and QUIC) are rejected by the extension and
   go out untouched. Some claimed flows are aborted by the app before the daemon answers: the
   losers of its parallel IPv4/IPv6 connects.
-
 - **The daemon stopped**: the extension noticed at once; Claude Code's flows to
   `api.anthropic.com`, Codex's to `chatgpt.com` and Claude Desktop's to bare addresses were
   refused, Claude Code's Datadog flows went out. Killed with the daemon still down, the
   extension was restarted by the system with the saved policy and kept refusing. The daemon
   back, the extension reconnected within 2 s and flows were redacted again.
 
-To check: the ChatGPT app (its title request, `ws.chatgpt.com`), Claude Desktop (step 4), and
-the fallback from QUIC.
+To check: Claude Desktop (step 4), and the fallback from QUIC (the extension does not log the
+UDP flows it refuses).
 
 ### Seeing the values (development builds)
 
