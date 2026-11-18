@@ -344,7 +344,8 @@ profile (`com.apple.vpn.managed`, `VPNType` `TransparentProxy`).
   the CA cannot cover that host or the traffic to it is not TLS, and otherwise tunnels to the
   CONNECT target, replaying the bytes it read. Ports other than 443 are tunnelled without a look.
 - **UDP.** A claimed flow is opened and closed: QUIC fails and the app falls back to TCP
-  (finding 8).
+  (finding 8). Each refusal is logged with the app and the address: the system gives UDP flows
+  no host name.
 - **Signing.** The `app-proxy-provider-systemextension` value of
   `com.apple.developer.networking.networkextension`, and the app group its `NEMachServiceName`
   is prefixed with, come with a Developer ID provisioning profile with the Network Extensions
@@ -399,14 +400,17 @@ payload installs from a manual profile.
 - **Other processes'** flows (Apple's daemons, TCP and QUIC) are rejected by the extension and
   go out untouched. Some claimed flows are aborted by the app before the daemon answers: the
   losers of its parallel IPv4/IPv6 connects.
+- **QUIC.** Claude Desktop's QUIC to `160.79.104.10` (Anthropic) was refused and the same
+  second it opened TCP flows to `claude.ai`; the ChatGPT window's to a Cloudflare address, then
+  TCP to `ws.chatgpt.com`. Both apps worked as usual. Their other UDP to port 443 went to
+  Google (its public DNS, and Chromium's own requests).
 - **The daemon stopped**: the extension noticed at once; Claude Code's flows to
   `api.anthropic.com`, Codex's to `chatgpt.com` and Claude Desktop's to bare addresses were
   refused, Claude Code's Datadog flows went out. Killed with the daemon still down, the
   extension was restarted by the system with the saved policy and kept refusing. The daemon
   back, the extension reconnected within 2 s and flows were redacted again.
 
-To check: Claude Desktop (step 4), and the fallback from QUIC (the extension does not log the
-UDP flows it refuses).
+To check: Claude Desktop (step 4).
 
 ### Seeing the values (development builds)
 

@@ -59,8 +59,10 @@ final class TransparentProxy: NETransparentProxyProvider, NEAppProxyUDPFlowHandl
     }
 
     func handleNewUDPFlow(_ flow: NEAppProxyUDPFlow, initialRemoteFlowEndpoint remoteEndpoint: Network.NWEndpoint) -> Bool {
-        guard protectedApp(flow, policy.state.policy) != nil else { return false }
+        guard let app = protectedApp(flow, policy.state.policy) else { return false }
         // QUIC to port 443: refused, so that the app retries over TCP, which the daemon sees.
+        let name = flow.remoteHostname.flatMap { $0.isEmpty ? nil : $0 } ?? "\(remoteEndpoint)"
+        log.notice("\(app, privacy: .public) → \(name, privacy: .public) (UDP): refused, the app falls back to TCP")
         Self.refuse(flow)
         return true
     }
