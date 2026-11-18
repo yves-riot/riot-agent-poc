@@ -11,7 +11,7 @@ guard. Not the file blocking: the ES extension needs Apple's entitlement.
   network extension, the daemons (Managed Login Items), Full Disk Access for the daemon,
   sending keys for the menu bar app; sets the transparent proxy; trusts the fleet CA; gives the
   daemon its settings (the stub's URL, workspace and secret).
-- **A package** (`Riot-<version>.pkg`): Riot.app in `/Applications` (the menu bar app, the daemon,
+- **A package** (`Riot-<version>-<build>.pkg`): Riot.app in `/Applications` (the menu bar app, the daemon,
   the stub, the network extension) and the fleet CA's key in
   `/Library/Application Support/com.tryriot.agent` (root, `0600`). Its postinstall starts the app
   in the user's session; the app registers the daemon, the stub and itself as a login item, and
@@ -46,8 +46,9 @@ Then the package, with the team's identity and provisioning profiles (an app id 
 carry the System Extension and Network Extensions capabilities; a bundle id other than
 `com.tryriot.agent` takes `APP_ID`). Build it in a shell that does not mark the files it writes
 (`com.apple.provenance` turns into `._*` entries in the package; they do no harm, the installer
-folds them back into attributes). Raise `BUILD_NUMBER` with every release: macOS keeps an
-installed network extension whose version did not change.
+folds them back into attributes). Raise `BUILD_NUMBER` with every release: it is the app's and
+the extensions' `CFBundleVersion`, which the audit script compares, and macOS keeps an installed
+network extension whose version did not change.
 
 ```sh
 SIGN_IDENTITY="Developer ID Application: … (TEAMID)" TEAM_ID=TEAMID APP_ID=… \
@@ -79,10 +80,22 @@ identity: Iru installs it with its agent, as root, without asking Gatekeeper.
 2. **Check it on a Mac** before the package: System Settings › Privacy & Security › Profiles,
    "Riot Agent". Installed after the profile, the package finds every step pre-approved;
    installed before, the user sees prompts for the background items and the extension.
-3. **The package** as a custom app, assigned to the same blueprint.
+3. **The package** as a custom app, assigned to the same blueprint, installed with "Audit and
+   Enforce" and `apple/build/iru-audit.sh` as its audit script (build-pkg.sh writes it next to
+   the package). "Install once" never installs a newer package on a Mac that has the app.
 
-Updates: a new package (higher `BUILD_NUMBER`) in the same custom app. The postinstall restarts
-the app, the daemon and the stub on the new binaries; the app replaces the network extension.
+Updates: a new package (higher `BUILD_NUMBER`) in the same custom app, with the audit script of
+the same build. At its next check-in (or `sudo iru run`), the Mac's audit finds an older build
+(`/Applications/Riot.app`'s `CFBundleVersion`) and Iru installs the package. The postinstall
+restarts the app, the daemon and the stub on the new binaries; the app replaces the network
+extension. Checking an update on a Mac:
+
+```sh
+defaults read /Applications/Riot.app/Contents/Info CFBundleVersion   # the new build
+pkgutil --pkg-info com.tryriot.agent.pkg                             # version: 0.1.0.<build>
+systemextensionsctl list                                             # the extension at <build>, [activated enabled]
+pgrep -lf Riot.app                                                   # one RiotAgent, the daemon, the stub
+```
 
 ## Checking a Mac
 

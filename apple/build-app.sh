@@ -24,6 +24,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/locales" \
          "$app/Contents/Library/LaunchDaemons" "$app/Contents/Library/LaunchAgents"
 cp "$here/Packaging/Info.plist" "$app/Contents/Info.plist"
 plutil -replace CFBundleIdentifier -string "$app_id" "$app/Contents/Info.plist"
+# The build an MDM compares with the one it deploys (mdm/iru-audit.sh).
+plutil -replace CFBundleVersion -string "${BUILD_NUMBER:-1}" "$app/Contents/Info.plist"
 cp "$here/RiotAgent/.build/release/RiotAgent" "$app/Contents/MacOS/RiotAgent"
 cp "$root/core/target/release/riot-daemon" "$app/Contents/MacOS/riot-daemon"
 cp "$root/core/target/release/riotctl" "$app/Contents/MacOS/riotctl"
@@ -49,6 +51,7 @@ if [ "${WITH_ES:-0}" = 1 ]; then
   sysext="$app/Contents/Library/SystemExtensions/com.tryriot.agent.es.systemextension"
   mkdir -p "$sysext/Contents/MacOS"
   cp "$here/RiotES/Info.plist" "$sysext/Contents/Info.plist"
+  plutil -replace CFBundleVersion -string "${BUILD_NUMBER:-1}" "$sysext/Contents/Info.plist"
   sdk=$(DEVELOPER_DIR="$xcode" xcrun --sdk macosx --show-sdk-path)
   DEVELOPER_DIR="$xcode" swiftc -O -sdk "$sdk" -target arm64-apple-macos14.0 -swift-version 5 -lEndpointSecurity -lbsm \
     "$here/RiotES/main.swift" "$here/RiotES/ESGuard.swift" "$here/RiotES/DaemonLink.swift" \

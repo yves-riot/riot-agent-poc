@@ -1,5 +1,6 @@
 #!/bin/sh
-# Builds apple/build/Riot-<version>.pkg, the package an MDM deploys (after the profile).
+# Builds apple/build/Riot-<version>-<build>.pkg, the package an MDM deploys (after the profile),
+# and apple/build/iru-audit.sh, the audit script that has Iru install it where an older build runs.
 #   SIGN_IDENTITY="Developer ID Application: …" INSTALLER_IDENTITY="Developer ID Installer: …" \
 #   WITH_ES=1 ES_PROVISIONING_PROFILE=… apple/build-pkg.sh
 # (the variables of build-app.sh). FLEET_CA_DIR (mdm/fleet-ca.sh) installs a CA every Mac shares,
@@ -24,6 +25,8 @@ if [ -n "${NOTARY_PROFILE:-}" ]; then
   xcrun stapler staple "$here/build/Riot.app"
 fi
 version=$(defaults read "$here/build/Riot.app/Contents/Info" CFBundleShortVersionString)
+build=$(defaults read "$here/build/Riot.app/Contents/Info" CFBundleVersion)
+pkg="$here/build/Riot-$version-$build.pkg"
 root="$here/build/pkgroot"
 rm -rf "$root" && mkdir -p "$root/Applications"
 ditto --noextattr --noqtn "$here/build/Riot.app" "$root/Applications/Riot.app"
@@ -44,12 +47,13 @@ while /usr/libexec/PlistBuddy -c "Print :$i" "$components" >/dev/null 2>&1; do
   /usr/libexec/PlistBuddy -c "Add :$i:BundleIsRelocatable bool false" "$components"
   i=$((i + 1))
 done
-pkgbuild --root "$root" --component-plist "$components" --identifier com.tryriot.agent.pkg --version "$version" \
+pkgbuild --root "$root" --component-plist "$components" --identifier com.tryriot.agent.pkg --version "$version.$build" \
   --scripts "$here/Packaging/scripts" --install-location / "$here/build/Riot-component.pkg"
 if [ -n "${INSTALLER_IDENTITY:-}" ]; then
-  productbuild --package "$here/build/Riot-component.pkg" --sign "$INSTALLER_IDENTITY" "$here/build/Riot-$version.pkg"
+  productbuild --package "$here/build/Riot-component.pkg" --sign "$INSTALLER_IDENTITY" "$pkg"
 else
-  productbuild --package "$here/build/Riot-component.pkg" "$here/build/Riot-$version.pkg"
+  productbuild --package "$here/build/Riot-component.pkg" "$pkg"
 fi
 rm -f "$here/build/Riot-component.pkg" "$components"
-echo "built $here/build/Riot-$version.pkg"
+sed "s/__BUILD_NUMBER__/$build/" "$here/../mdm/iru-audit.sh" > "$here/build/iru-audit.sh"
+echo "built $pkg and $here/build/iru-audit.sh"
