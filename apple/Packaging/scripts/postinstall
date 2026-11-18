@@ -1,10 +1,11 @@
 #!/bin/sh
-# Runs as root after the MDM installed the package. Starts Riot.app in the console user's
-# session: on first launch it registers its daemon, its per-user agent (which then keeps it
-# running at every login) and its system extensions, all pre-approved by the MDM profile; after
-# an update, the new copy registers the new versions. A copy already running is the old one:
-# it is stopped first, and so are the daemons launchd runs from it (registered already, they
-# restart on the new binaries; not registered yet, there is nothing to restart).
+# Runs as root after the MDM installed the package. Opens Riot.app in the console user's
+# session: on first launch it registers its daemon, its per-user agent and its system
+# extensions, all pre-approved by the MDM profile, then leaves the menu bar to launchd's copy,
+# which keeps it running at every login and activates the extensions (Installer.run). A copy
+# already running is the old one: it is stopped first, and so are the daemons launchd runs from
+# the app (registered already, they restart on the new binaries; not registered yet, there is
+# nothing to restart).
 pkill -x RiotAgent
 for label in com.tryriot.agent.daemon com.tryriot.agent.stub-parrot; do
   launchctl kickstart -k "system/$label" 2>/dev/null

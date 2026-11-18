@@ -22,7 +22,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory) // menu bar only, no Dock icon
-        installer.run()
+        if installer.run() {
+            // launchd runs the menu bar app from now on (Installer.run).
+            NSApp.terminate(nil)
+            return
+        }
         model.start()
     }
 }

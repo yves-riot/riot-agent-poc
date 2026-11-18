@@ -52,8 +52,14 @@ installed network extension whose version did not change.
 ```sh
 SIGN_IDENTITY="Developer ID Application: … (TEAMID)" TEAM_ID=TEAMID APP_ID=… \
 WITH_NE=1 NE_PROVISIONING_PROFILE=… APP_PROVISIONING_PROFILE=… BUILD_NUMBER=… \
-WITH_STUB=1 FLEET_CA_DIR=~/riot/fleet-ca apple/build-pkg.sh
+WITH_STUB=1 FLEET_CA_DIR=~/riot/fleet-ca NOTARY_PROFILE=riot apple/build-pkg.sh
 ```
+
+`NOTARY_PROFILE` notarizes Riot.app, then staples it, before packaging it: on a Mac with SIP on,
+sysextd checks the network extension with the notary service and uninstalls it when it is not
+notarized (`extension failed to validate! uninstalling...`). The credentials are stored once:
+`xcrun notarytool store-credentials riot --apple-id … --team-id TEAMID`, with an app-specific
+password of the team's Apple Account.
 
 And the profile:
 
@@ -63,8 +69,8 @@ ENROLLMENT_SECRET=rbx_dev CA_CERT=~/riot/fleet-ca/gateway-ca.pem \
 mdm/render-profile.sh > riot-agent-fleet.mobileconfig
 ```
 
-The package is signed only if `INSTALLER_IDENTITY` names a Developer ID Installer identity, and
-is not notarized. Iru installs it with its agent, as root, which Gatekeeper does not check.
+The package itself is signed only if `INSTALLER_IDENTITY` names a Developer ID Installer
+identity: Iru installs it with its agent, as root, without asking Gatekeeper.
 
 ## In Iru
 
@@ -94,12 +100,25 @@ sees the email everywhere else.
 ## Measured (macOS 26 VM, not enrolled in an MDM)
 
 With the payloads that need an MDM replaced by hand (background items approved in System
-Settings, the managed settings written to `/Library/Managed Preferences`, the CA trusted with
+Settings, the managed settings written to `/Library/Managed Preferences`, which macOS empties at every
+startup when no profile holds them, the CA trusted with
 `security add-trusted-cert`): `installer -pkg` installed Riot.app with a valid signature and the
-CA's key; the app registered the daemon and the stub and replaced the network extension; the
+CA's key; the app registered the daemon and the stub and replaced the network extension (not notarized: the VM runs with SIP off); the
 daemon enrolled with the stub and got the policy. Claude Desktop's message was redacted with the
 fleet CA (the spelling test above). Installed again over itself, the package restarted all three
 on the new binaries; the daemon enrolled again with the restarted stub.
+
+## Measured (MacBook, macOS 27.2, enrolled in Iru)
+
+The profile, scoped by a tag, installed every payload (`Source: MDM`, `Removal Disallowed`); Iru
+substituted `$EMAIL`. The package, not notarized: Iru installed it, the daemon and the stub ran
+without a prompt and the daemon got the policy, but sysextd uninstalled the network extension,
+not notarized. The postinstall's copy of the app and launchd's both stayed, two icons in the
+menu bar. Notarized, the extension was activated without a prompt.
+
+An opened copy of the app now starts launchd's (`launchctl kickstart`) and quits: launchd does
+not restart a copy that exited with status 0, which a stopped app does. In the VM, after an
+update, one copy ran, launchd's, and the new extension replaced the old one.
 
 ## Limits
 

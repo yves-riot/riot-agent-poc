@@ -21,14 +21,27 @@ final class Installer: NSObject, OSSystemExtensionRequestDelegate {
 
     static var isInstalledCopy: Bool { Bundle.main.bundlePath.hasPrefix("/Applications/") }
 
-    func run() {
-        guard Self.isInstalledCopy else { return }
+    /// Whether this copy was started by launchd as the per-user agent, rather than opened (by
+    /// the package's postinstall, or by the user).
+    static var isLaunchAgent: Bool { ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"] == "com.tryriot.agent" }
+
+    /// Registers and activates everything. Returns whether this copy should quit: an opened copy
+    /// (the package's postinstall, the user) leaves the menu bar to launchd's once the agent is
+    /// registered, and starts it if it is not running (a copy that quit is not restarted), so
+    /// that one icon shows. launchd's copy activates the system extensions.
+    func run() -> Bool {
+        guard Self.isInstalledCopy else { return false }
         register(SMAppService.daemon(plistName: "com.tryriot.agent.daemon.plist"), "daemon")
-        register(SMAppService.agent(plistName: "com.tryriot.agent.plist"), "agent")
+        let agent = SMAppService.agent(plistName: "com.tryriot.agent.plist")
+        register(agent, "agent")
         // Test fleets only: parrot's agent API, stubbed (WITH_STUB=1 build-app.sh).
         let stub = "com.tryriot.agent.stub-parrot.plist"
         if FileManager.default.fileExists(atPath: Bundle.main.bundleURL.appendingPathComponent("Contents/Library/LaunchDaemons/\(stub)").path) {
             register(SMAppService.daemon(plistName: stub), "stub parrot")
+        }
+        if agent.status == .enabled && !Self.isLaunchAgent {
+            Self.startLaunchAgent()
+            return true
         }
         let sysext = Bundle.main.bundleURL.appendingPathComponent("Contents/Library/SystemExtensions")
         for identifier in Self.extensionIdentifiers
@@ -36,6 +49,20 @@ final class Installer: NSObject, OSSystemExtensionRequestDelegate {
             let request = OSSystemExtensionRequest.activationRequest(forExtensionWithIdentifier: identifier, queue: .main)
             request.delegate = self
             OSSystemExtensionManager.shared.submitRequest(request)
+        }
+        return false
+    }
+
+    /// Starts launchd's copy, unless it runs already.
+    private static func startLaunchAgent() {
+        let launchctl = Process()
+        launchctl.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        launchctl.arguments = ["kickstart", "gui/\(getuid())/com.tryriot.agent"]
+        do {
+            try launchctl.run()
+            launchctl.waitUntilExit()
+        } catch {
+            NSLog("riot: cannot start the menu bar agent: %@", String(describing: error))
         }
     }
 

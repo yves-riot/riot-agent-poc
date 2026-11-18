@@ -4,11 +4,25 @@
 #   WITH_ES=1 ES_PROVISIONING_PROFILE=… apple/build-pkg.sh
 # (the variables of build-app.sh). FLEET_CA_DIR (mdm/fleet-ca.sh) installs a CA every Mac shares,
 # which the profile trusts; without it, each daemon creates its own, which nothing trusts.
-# Then notarize: xcrun notarytool submit build/Riot-*.pkg --keychain-profile riot --wait
-#                xcrun stapler staple build/Riot-*.pkg
+# NOTARY_PROFILE notarizes Riot.app before packaging it: a Mac with SIP on refuses a system
+# extension that is not notarized. The profile holds the team's credentials, stored once with
+#   xcrun notarytool store-credentials <profile> --apple-id … --team-id …
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 "$here/build-app.sh"
+if [ -n "${NOTARY_PROFILE:-}" ]; then
+  zip="$here/build/Riot-notarize.zip"
+  rm -f "$zip"
+  ditto -c -k --keepParent "$here/build/Riot.app" "$zip"
+  out=$(xcrun notarytool submit "$zip" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1) || true
+  rm -f "$zip"
+  echo "$out"
+  echo "$out" | grep -q "status: Accepted" || {
+    echo "notarization failed: xcrun notarytool log <id> --keychain-profile $NOTARY_PROFILE" >&2
+    exit 1
+  }
+  xcrun stapler staple "$here/build/Riot.app"
+fi
 version=$(defaults read "$here/build/Riot.app/Contents/Info" CFBundleShortVersionString)
 root="$here/build/pkgroot"
 rm -rf "$root" && mkdir -p "$root/Applications"
