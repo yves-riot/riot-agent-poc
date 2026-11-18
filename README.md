@@ -47,10 +47,19 @@ default `~/dev/riot/riot-browser-extension/packages`):
 git clone -b feat/shared-sonar-packages git@github.com:tryriot/riot-browser-extension.git \
   ~/dev/riot/riot-browser-extension
 (cd js && pnpm install && node build.mjs)
-dev/run-dev.sh                                   # stub parrot + daemon, unprivileged
-apple/build-app.sh                               # → apple/build/Riot.app (ad-hoc signed)
-RIOT_SOCKET=$TMPDIR/riot-dev.sock apple/build/Riot.app/Contents/MacOS/RiotAgent
+dev/run-dev.sh      # builds apple/build/Riot.app (build-app.sh, ad-hoc), then runs the stub parrot,
+                    # the daemon (unprivileged) and the menu bar app (its icon says "DEV")
 ```
+
+`RIOT_DEV_APP=0` runs without the menu bar app, `RIOT_DEV_BUILD=0` runs the last build as it is.
+
+On a Mac where the agent is installed (a test fleet's, [docs/deploy-iru.md](docs/deploy-iru.md)),
+`run-dev.sh` pauses it for the run (`sudo riotctl pause`, the password once) and resumes it when
+the run ends, however it ends (`riotctl pause <pid>`: the installed daemon resumes once the
+script is gone), so that only the dev agent guards the clipboard and the AI apps; the installed
+menu bar app shows "standby" meanwhile, next to the dev one, whose icon says "DEV". Its daemon still holds the gateway's port, 7591: the
+dev gateway takes 7601, and says so. Everything else of a dev run is its own (socket, data
+folder, CA, stub on 8787).
 
 `RIOT_SOCKET=$TMPDIR/riot-dev.sock core/target/release/riotctl status|popup|watch|…`
 talks to the daemon directly; `scan` works unprivileged because `run-dev.sh` sets

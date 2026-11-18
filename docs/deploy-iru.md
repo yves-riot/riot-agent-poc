@@ -126,6 +126,13 @@ update, one copy ran, launchd's, and the new extension replaced the old one.
   not start the app, and nothing does until the user opens it once.
 - **An update restarts the daemon**, which loses its tokens: conversations from before show
   tokens where they showed values (see the Connect RPC limits in network-interception.md).
+- **Developing on a Mac of the fleet**: `dev/run-dev.sh` pauses the installed agent for its run
+  (`sudo riotctl pause <its pid>`: the agent resumes once the script is gone, however it ends), its gateway on 7601 (the agent's daemon
+  holds 7591). Paused, the agent applies no policy: no clipboard guard, the network extension
+  takes no flow. A pause lasts until `resume` or the daemon's next start (a restart, an update),
+  and the heartbeat reports it. Stopping the agent's daemon instead would leave the protected
+  apps without their API hosts: the network extension refuses their flows while the daemon is
+  down.
 - **Removing** the agent: unassign the custom app and the profile, then delete `/Applications/Riot.app`
   and `/Library/Application Support/com.tryriot.agent`. The profile keeps the extension from being
   removed by the user, not by the MDM.

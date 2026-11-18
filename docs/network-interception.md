@@ -95,7 +95,7 @@ history from disk (`~/.codex/sessions`), not from the network.
 ## Local gateway
 
 `core/riot-daemon/src/gateway/`: the daemon listens on `127.0.0.1:7591` (`RIOT_GATEWAY_ADDR`,
-loopback only) and forwards `/anthropic/*` to `https://api.anthropic.com/*` with the client's
+loopback only; `dev/run-dev.sh` takes 7601 when an installed agent holds 7591) and forwards `/anthropic/*` to `https://api.anthropic.com/*` with the client's
 own headers and credentials.
 
 ```sh
@@ -160,7 +160,7 @@ mitmweb --mode reverse:https://api.anthropic.com@127.0.0.1:18081 \
         --mode reverse:https://chatgpt.com@127.0.0.1:18082          # UI on http://127.0.0.1:8081
 RIOT_GATEWAY_UPSTREAM=api.anthropic.com=http://127.0.0.1:18081,chatgpt.com=http://127.0.0.1:18082 \
   dev/run-dev.sh
-ANTHROPIC_BASE_URL=http://127.0.0.1:7591/anthropic claude
+ANTHROPIC_BASE_URL=http://127.0.0.1:7591/anthropic claude   # 7601 where the agent is installed
 ```
 
 The `POST /v1/messages` request holds tokens (`[EMAIL_2]`, `[IBAN_1]`) where Claude Code shows
@@ -214,7 +214,7 @@ after the TLS handshake is shared with the base URL entry.
 
 ```sh
 dev/run-dev.sh
-HTTPS_PROXY=http://127.0.0.1:7591 NODE_EXTRA_CA_CERTS=$TMPDIR/riot-dev/gateway-ca.pem claude
+HTTPS_PROXY=http://127.0.0.1:7591 NODE_EXTRA_CA_CERTS=$TMPDIR/riot-dev/gateway-ca.pem claude   # or 7601
 ```
 
 `RIOT_GATEWAY_UPSTREAM` applies here too, to see what leaves the gateway.
@@ -249,7 +249,7 @@ rewritten: Codex's WebSocket (`GET /backend-api/codex/responses`, upgraded) and 
 transport (`POST`, SSE). Other WebSockets on the host are relayed message by message, untouched.
 
 ```sh
-HTTPS_PROXY=http://127.0.0.1:7591 SSL_CERT_FILE=<system roots + gateway-ca.pem> codex --no-daemon
+HTTPS_PROXY=http://127.0.0.1:7591 SSL_CERT_FILE=<system roots + gateway-ca.pem> codex --no-daemon   # or 7601
 ```
 
 `--no-daemon` keeps the conversation in the CLI process: otherwise it goes through the
@@ -427,7 +427,8 @@ profile (`com.apple.vpn.managed`, `VPNType` `TransparentProxy`).
   has no name for, is opened and closed at once instead of going out unredacted; its other
   flows (telemetry, updates) go out as they are. The extension saves the last policy the
   daemon gave (`/Library/Application Support/com.tryriot.agent/network-policy.json`, root,
-  `0600`), so that it still applies after a restart while the daemon is down. Before a first
+  `0600`), so that it still applies after a restart while the daemon is down. A daemon paused
+  by root (`riotctl pause`) gives an empty policy: the extension takes no flow until `resume`. Before a first
   policy (a fresh install), nothing is protected. A flow the daemon cannot take (no
   `flows.sock`, a refused CONNECT) is closed too.
 - **TCP.** A claimed flow becomes a CONNECT on `flows.sock` (next to the daemon's socket, mode
