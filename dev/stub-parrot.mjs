@@ -98,7 +98,7 @@ createServer(async (req, res) => {
         logo_url: null,
         portal_url: "https://portal.example.com",
         default_locale: "fr",
-        bot_branding: { name: "Albert", icon_url: null },
+        bot_branding: { name: "Albert", icon_url: "https://content.tryriot.com/Course/albert-avatar.png" },
       },
       policies: [policy()],
     });
