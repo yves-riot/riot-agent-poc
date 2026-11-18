@@ -14,6 +14,11 @@ path = "src/main.rs"
 name = "riotctl"
 path = "src/bin/riotctl.rs"
 
+# parrot's agent API, stubbed, for test fleets (bundled with WITH_STUB=1 apple/build-app.sh).
+[[bin]]
+name = "riot-stub-parrot"
+path = "src/bin/stub_parrot.rs"
+
 [features]
 # Logs redacted and restored values: development builds only, never one that ships.
 debug-redaction = []

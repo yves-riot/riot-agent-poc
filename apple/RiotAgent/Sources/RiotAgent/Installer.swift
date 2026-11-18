@@ -25,6 +25,11 @@ final class Installer: NSObject, OSSystemExtensionRequestDelegate {
         guard Self.isInstalledCopy else { return }
         register(SMAppService.daemon(plistName: "com.tryriot.agent.daemon.plist"), "daemon")
         register(SMAppService.agent(plistName: "com.tryriot.agent.plist"), "agent")
+        // Test fleets only: parrot's agent API, stubbed (WITH_STUB=1 build-app.sh).
+        let stub = "com.tryriot.agent.stub-parrot.plist"
+        if FileManager.default.fileExists(atPath: Bundle.main.bundleURL.appendingPathComponent("Contents/Library/LaunchDaemons/\(stub)").path) {
+            register(SMAppService.daemon(plistName: stub), "stub parrot")
+        }
         let sysext = Bundle.main.bundleURL.appendingPathComponent("Contents/Library/SystemExtensions")
         for identifier in Self.extensionIdentifiers
         where FileManager.default.fileExists(atPath: sysext.appendingPathComponent("\(identifier).systemextension").path) {

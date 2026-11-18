@@ -3,6 +3,7 @@
 // Env: STUB_MONITORING=0 (policy disabled), STUB_NO_EMPLOYEE=1, STUB_NO_BYPASS=1.
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 const port = Number(process.argv[2] ?? 8787);
 const WORKSPACE_ID = "ws-dev";
@@ -11,55 +12,15 @@ const devices = new Map(); // token -> device
 const reports = new Map(); // session_id -> report (upsert, like parrot)
 const heartbeats = [];
 
+// The policy every device gets, shared with the stub the fleet package bundles
+// (core/riot-daemon/src/bin/stub_parrot.rs).
+const basePolicy = JSON.parse(
+  readFileSync(new URL("./stub-policy.json", import.meta.url), "utf8"),
+);
 const policy = () => ({
-  policy_kind: "browser_extension_sensitive_data_monitoring",
+  ...basePolicy,
   enabled: process.env.STUB_MONITORING !== "0",
   allow_bypass_redaction: process.env.STUB_NO_BYPASS !== "1",
-  data_types: [
-    { data_type: "secrets", enabled: true },
-    { data_type: "financial_data", enabled: true },
-    { data_type: "personal_data", enabled: true },
-  ],
-  services: [
-    {
-      service_id: "openai",
-      display_name: "ChatGPT",
-      authorized: false,
-      logo_url: null,
-      domain: "chatgpt.com",
-      domains: ["https://chatgpt.com/*"],
-      excluded_domains: [],
-      account_detection: null,
-      desktop_apps: [
-        {
-          platform: "macos",
-          bundle_id: "com.openai.codex",
-          team_id: "2DC432GLL2",
-          executable_prefixes: ["/Applications/ChatGPT.app/"],
-        },
-      ],
-      api_hosts: ["chatgpt.com", "api.openai.com"],
-    },
-    {
-      service_id: "anthropic",
-      display_name: "Claude",
-      authorized: false,
-      logo_url: null,
-      domain: "claude.ai",
-      domains: ["https://claude.ai/*"],
-      excluded_domains: [],
-      account_detection: null,
-      desktop_apps: [
-        {
-          platform: "macos",
-          bundle_id: "com.anthropic.claudefordesktop",
-          team_id: "Q6L2SF6YDW",
-          executable_prefixes: ["/Applications/Claude.app/"],
-        },
-      ],
-      api_hosts: ["api.anthropic.com", "claude.ai"],
-    },
-  ],
 });
 
 const json = (res, status, body) => {

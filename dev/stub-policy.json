@@ -1,0 +1,73 @@
+{
+  "policy_kind": "browser_extension_sensitive_data_monitoring",
+  "enabled": true,
+  "allow_bypass_redaction": true,
+  "data_types": [
+    {
+      "data_type": "secrets",
+      "enabled": true
+    },
+    {
+      "data_type": "financial_data",
+      "enabled": true
+    },
+    {
+      "data_type": "personal_data",
+      "enabled": true
+    }
+  ],
+  "services": [
+    {
+      "service_id": "openai",
+      "display_name": "ChatGPT",
+      "authorized": false,
+      "logo_url": null,
+      "domain": "chatgpt.com",
+      "domains": [
+        "https://chatgpt.com/*"
+      ],
+      "excluded_domains": [],
+      "account_detection": null,
+      "desktop_apps": [
+        {
+          "platform": "macos",
+          "bundle_id": "com.openai.codex",
+          "team_id": "2DC432GLL2",
+          "executable_prefixes": [
+            "/Applications/ChatGPT.app/"
+          ]
+        }
+      ],
+      "api_hosts": [
+        "chatgpt.com",
+        "api.openai.com"
+      ]
+    },
+    {
+      "service_id": "anthropic",
+      "display_name": "Claude",
+      "authorized": false,
+      "logo_url": null,
+      "domain": "claude.ai",
+      "domains": [
+        "https://claude.ai/*"
+      ],
+      "excluded_domains": [],
+      "account_detection": null,
+      "desktop_apps": [
+        {
+          "platform": "macos",
+          "bundle_id": "com.anthropic.claudefordesktop",
+          "team_id": "Q6L2SF6YDW",
+          "executable_prefixes": [
+            "/Applications/Claude.app/"
+          ]
+        }
+      ],
+      "api_hosts": [
+        "api.anthropic.com",
+        "claude.ai"
+      ]
+    }
+  ]
+}

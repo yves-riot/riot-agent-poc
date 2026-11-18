@@ -30,6 +30,16 @@ cp "$root/core/target/release/riotctl" "$app/Contents/MacOS/riotctl"
 cp "$packages/sonar-ui/src/locales/en.json" "$packages/sonar-ui/src/locales/fr.json" "$app/Contents/Resources/locales/"
 cp "$here/Packaging/com.tryriot.agent.daemon.plist" "$app/Contents/Library/LaunchDaemons/"
 cp "$here/Packaging/com.tryriot.agent.plist" "$app/Contents/Library/LaunchAgents/"
+bins="riot-daemon riotctl"
+# A test fleet without parrot's agent API (WITH_STUB=1): its stub runs next to the daemon.
+if [ "${WITH_STUB:-0}" = 1 ]; then
+  cp "$root/core/target/release/riot-stub-parrot" "$app/Contents/MacOS/riot-stub-parrot"
+  cp "$here/Packaging/com.tryriot.agent.stub-parrot.plist" "$app/Contents/Library/LaunchDaemons/"
+  bins="$bins riot-stub-parrot"
+fi
+for plist in "$app"/Contents/Library/LaunchDaemons/*.plist "$app"/Contents/Library/LaunchAgents/*.plist; do
+  plutil -replace AssociatedBundleIdentifiers -json "[\"$app_id\"]" "$plist"
+done
 
 identity=${SIGN_IDENTITY:--}
 
@@ -66,7 +76,7 @@ if [ "${WITH_NE:-0}" = 1 ]; then
   [ -n "${NE_PROVISIONING_PROFILE:-}" ] && cp "$NE_PROVISIONING_PROFILE" "$sysext/Contents/embedded.provisionprofile"
   codesign --force --options runtime --sign "$identity" --entitlements "$here/build/RiotNE.entitlements" "$sysext"
 fi
-for bin in riot-daemon riotctl; do
+for bin in $bins; do
   codesign --force --options runtime --sign "$identity" --identifier "com.tryriot.agent.$bin" "$app/Contents/MacOS/$bin"
 done
 # Activating a system extension takes an entitlement that comes with the app's provisioning

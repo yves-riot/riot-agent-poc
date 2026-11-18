@@ -34,8 +34,8 @@ Why Rust, QuickJS and native apps: [docs/stack-choices.md](docs/stack-choices.md
 | `apple/RiotES`                       | Endpoint Security system extension                                                                                                      |
 | `apple/RiotNE`                       | network system extension: transparent proxy handing protected apps' TLS flows to the daemon                                             |
 | `apple/build-app.sh`, `build-pkg.sh` | `Riot.app` and the MDM `.pkg`                                                                                                           |
-| `mdm/`                               | configuration profile template + renderer                                                                                               |
-| `dev/`                               | stub parrot, dev settings, `run-dev.sh`                                                                                                 |
+| `mdm/`                               | configuration profile template + renderer, a test fleet's CA ([docs/deploy-iru.md](docs/deploy-iru.md))                                 |
+| `dev/`                               | stub parrot and its policy (`stub-policy.json`, shared with `riot-stub-parrot`), dev settings, `run-dev.sh`                            |
 
 ## Run it locally
 
@@ -220,8 +220,8 @@ redacts Claude Code's API requests (`ANTHROPIC_BASE_URL=http://127.0.0.1:7591/an
   - device token in the System keychain (now a 0600 file);
   - IPC peer code-signature check (now uid only, and `scanFile` is root-only);
   - Developer ID signing + notarization (`build-pkg.sh` takes the identities).
-  - Building the pkg from this sandboxed shell leaves `._*` AppleDouble entries for
-    `com.apple.provenance`; build on CI.
+  - Building the pkg from a shell that marks its files leaves `._*` AppleDouble entries for
+    `com.apple.provenance` (the installer folds them back into attributes); build on CI.
 - **Pasteboard privacy:** no PPPC key is known to pre-approve "Paste from Other Apps". The popup
   shows the state (`NSPasteboard.accessBehavior`) and links to Settings.
 - **Product:** authorized services (account detection has no desktop equivalent), and whether to
