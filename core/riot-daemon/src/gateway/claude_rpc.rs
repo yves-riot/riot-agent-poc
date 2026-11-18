@@ -4,7 +4,9 @@
 //! `application/connect+proto`. Pure, like `anthropic` and `responses`.
 //!
 //! A message leaves in `PerformAction`, its text in field 2.3 (the send action), and is
-//! redacted there. The schema is not published: the paths come from the app's own requests.
+//! redacted there, with the text of each file attached inline (an `InlineAttachment` in field
+//! 2.15: a `.txt`, its content in field 4). The schema is not published: the paths come from
+//! the app's own requests.
 //!
 //! Answers come back in `StreamTimeline`: the conversation's title, the user's message as the
 //! server keeps it, and the assistant's text in two forms. A block snapshot (`1.1.5`, a
@@ -14,6 +16,9 @@
 //! the next delta; every other string of every response is detokenized where it is, the
 //! timeline's shape changing with the features the app shows. A snapshot drops what its block
 //! held back: it carries the text whole.
+//!
+//! An attached file comes back from `GET /api/organizations/<org>/files/<id>/contents` (the
+//! app's preview): text files are detokenized like the timeline.
 //!
 //! The app signs each event it sends with its device key, over a hash of the event's content.
 //! Redacting the text changes that content: the server then asks the app to sign what it
@@ -31,12 +36,28 @@ const SERVICE: &str = "/anthropic.bard.api.v1alpha.ConversationService/";
 const SENT_TEXT: &[&[u64]] = &[
     // The send action's text.
     &[2, 3],
+    // Each inline attachment's text (`InlineAttachment.extracted_content`).
+    &[2, 15, 4],
 ];
 
 /// The method a path calls on the conversation service, if it does.
 pub fn method(path: &str) -> Option<&str> {
     let (_, method) = path.split_once(SERVICE)?;
     (!method.is_empty() && !method.contains('/')).then_some(method)
+}
+
+/// Whether a path downloads an uploaded or attached file's content.
+pub fn is_file_contents(path: &str) -> bool {
+    path.strip_prefix("/api/organizations/").is_some_and(|rest| {
+        let parts: Vec<&str> = rest.split('/').collect();
+        matches!(parts.as_slice(), [_, "files", _, "contents"])
+    })
+}
+
+/// Detokenizes a text file. `None` when nothing changed.
+pub fn detokenize_text(text: &str, resolve: &mut dyn FnMut(&str) -> Option<String>) -> Option<String> {
+    let out = tokens::replace(text, Escape::None, resolve);
+    (out != text).then_some(out)
 }
 
 /// Whether a method's request carries the user's text.
@@ -126,6 +147,14 @@ mod tests {
     }
 
     #[test]
+    fn file_contents_paths_are_recognised() {
+        assert!(is_file_contents("/api/organizations/org-1/files/file-1/contents"));
+        assert!(!is_file_contents("/api/organizations/org-1/files/file-1"));
+        assert!(!is_file_contents("/api/organizations/org-1/projects/p/files/file-1/contents"));
+        assert_eq!(detokenize_text("Email : [EMAIL_1]", &mut resolve).as_deref(), Some("Email : jean.dupont@acme.fr"));
+    }
+
+    #[test]
     fn the_sent_text_is_redacted_and_the_attestation_kept() {
         let attestation = len_field(17, &len_field(1, &[len_field(2, b"user"), len_field(3, &[0xab; 32])].concat()));
         let context = len_field(1, &[len_field(2, b"conversation-uuid"), attestation.clone()].concat());
@@ -134,6 +163,14 @@ mod tests {
         let out = redact_request(&body, &mut redact).unwrap().unwrap();
         assert_eq!(out, [context.clone(), send(b"Mon email est [EMAIL_1]")].concat());
         assert_eq!(redact_request(&[context, send(b"Bonjour")].concat(), &mut redact).unwrap(), None);
+    }
+
+    #[test]
+    fn the_text_of_every_inline_attachment_is_redacted() {
+        let file = |content: &[u8]| len_field(15, &[len_field(1, b"contrat.txt"), varint_field(2, 33), len_field(3, b"text/plain"), len_field(4, content)].concat());
+        let send = |a: &[u8], b: &[u8]| len_field(2, &[len_field(3, b"Resume ces fichiers"), file(a), file(b)].concat());
+        let out = redact_request(&send(b"Email : jean.dupont@acme.fr", b"rien"), &mut redact).unwrap().unwrap();
+        assert_eq!(out, send(b"Email : [EMAIL_1]", b"rien"));
     }
 
     #[test]

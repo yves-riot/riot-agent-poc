@@ -333,7 +333,9 @@ descriptors, the service and its requests are not. The paths below come from the
 traffic, decoded field by field.
 
 **What is redacted.** The text a message sends: field 2.3 of `PerformAction` (the send
-action). The request is rewritten in place: every other byte is kept, only that string and the
+action), and the text of each inline attachment, `InlineAttachment.extracted_content` in field
+2.15.4. A `.txt` file goes there (name, size, type, content), and so does a long paste, which
+the app turns into a "Pasted" attachment (type `txt`, no name). The request is rewritten in place: every other byte is kept, only that string and the
 lengths of the messages around it change. A `PerformAction` that does not parse as protobuf is
 refused (`400`), not sent.
 
@@ -362,6 +364,12 @@ as one, else as a string. The other guess would be unsafe: a nested message can 
 printable bytes (`J(` then 40 characters is field 9 holding them), and taken as a string, its
 text would change without its length.
 
+**Attached files, previewed.** The app shows an attachment from
+`GET /api/organizations/<org>/files/<id>/contents`, the text the server kept, so with its
+tokens. The gateway asks for it whole (no `Range`: a range of a detokenized file would not
+match) and uncompressed, and detokenizes it when it is text: `text/*`, or no content type (how
+claude.ai sends a `.txt`) and UTF-8. Anything else passes as it is.
+
 **Compression.** `Accept-Encoding` and `Connect-Accept-Encoding` are removed from the request,
 so that responses come back readable. A stream message compressed anyway with gzip is read; a
 restored message is sent on uncompressed, which Connect allows in any stream; another encoding
@@ -378,14 +386,24 @@ Through the network extension, with a `debug-redaction` daemon:
 - A longer answer quoting each value three times: no token appeared while it was written,
   18 tokens restored.
 - No other request to `claude.ai` held the values (`event_logging`, the other RPCs).
+- A `.txt` attached with an email and an IBAN, and a 6 KB paste holding them (sent as a
+  "Pasted" attachment): Claude saw only placeholders, the answers and the attachment's preview
+  showed the real values.
 - Before the stream detokenizer, a token split across deltas showed until the final snapshot
   replaced it.
 
 ### Limits
 
-- Only the send action's text is redacted. An attachment's extracted text
-  (`InlineAttachment.extracted_content`, finding 7), an edited or retried message, and other
-  actions that may carry text are not seen yet: each needs its path, from the app's traffic.
+- Only the send action's text and its inline attachments are redacted. An edited or retried
+  message, and other actions that may carry text, are not seen yet: each needs its path, from
+  the app's traffic. Files the app uploads (pdf, docx, images) are not read: RiotES blocks a
+  sensitive one when the app opens it.
+- **Tokens do not survive the daemon.** The engine keeps the token-to-value map in memory only.
+  The conversation stays on claude.ai with its tokens: after the daemon restarts, an older
+  conversation shows `[EMAIL_1]` again (measured), and once a new value is given the same token,
+  it would show that value instead. This holds for every adapter whose history stays on the
+  server (Codex's too); Claude Code resends its history from the client, restored. Keeping the
+  map (encrypted, root-only, for a set time), or tokens unique per conversation, is to decide.
 - `claude.ai` authenticates with a cookie, not an `Authorization` header: every `claude.ai`
   session on the Mac shares one token scope.
 - Text that happens to parse as a message is not detokenized, unless a whole token falls in

@@ -380,6 +380,10 @@ impl Gateway {
             let scope = scope(&target.service_id, req.headers());
             return self.claude_rpc(req, &url, host, api_path, rpc, target, scope).await;
         }
+        if let Some(target) = target.as_ref().filter(|_| req.method() == Method::GET && claude_rpc::is_file_contents(api_path)) {
+            let scope = scope(&target.service_id, req.headers());
+            return self.claude_file(req, &url, scope).await;
+        }
 
         let rewrite = target.is_some() && req.method() == Method::POST && api.is_some();
         let api = api.unwrap_or(Api::Messages);
@@ -498,6 +502,46 @@ impl Gateway {
                     response_headers.remove(header::CONTENT_ENCODING);
                     response_headers.remove(header::CONTENT_LENGTH);
                     full(Bytes::from(out))
+                }
+                None => full(bytes),
+            }
+        } else {
+            StreamBody::new(upstream.bytes_stream().map_ok(Frame::data).map_err(std::io::Error::other)).boxed_unsync()
+        };
+        let mut response = Response::new(body);
+        *response.status_mut() = status;
+        *response.headers_mut() = response_headers;
+        Ok(response)
+    }
+
+    /// An attached file's content, as Claude Desktop previews it: asked for whole and
+    /// uncompressed, detokenized when it is text (`text/*`, or no content type and UTF-8).
+    /// Anything else passes as it is.
+    async fn claude_file(self: &Arc<Self>, req: Request<Incoming>, url: &str, scope: String) -> Result<Response<Body>, GatewayError> {
+        let mut headers = forwarded_headers(req.headers());
+        // A range of a detokenized file would not match the bytes the server meant.
+        for name in [header::RANGE, header::IF_RANGE, header::ACCEPT_ENCODING] {
+            headers.remove(name);
+        }
+        let upstream = self.client.get(url).headers(headers).send().await.map_err(|e| GatewayError::Upstream(e.to_string()))?;
+        let status = upstream.status();
+        let mut response_headers = forwarded_headers(upstream.headers());
+        // claude.ai sends a `.txt` with no content type: read as text when it decodes as UTF-8.
+        let is_text = upstream.headers().get(header::CONTENT_TYPE).is_none_or(|v| v.to_str().is_ok_and(|t| t.starts_with("text/")));
+        let plain = upstream.headers().get(header::CONTENT_ENCODING).is_none();
+        let small = upstream.content_length().is_some_and(|n| n <= MAX_TEXT_BYTES as u64);
+        let body = if status == StatusCode::OK && is_text && plain && small {
+            let bytes = upstream.bytes().await.map_err(|e| GatewayError::Upstream(e.to_string()))?;
+            let engine = self.agent.engine.clone();
+            let detokenized = std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|text| tokio::task::block_in_place(|| claude_rpc::detokenize_text(text, &mut resolver(&engine, &scope))));
+            match detokenized {
+                Some(text) => {
+                    for name in [header::CONTENT_LENGTH, header::ETAG, header::ACCEPT_RANGES] {
+                        response_headers.remove(name);
+                    }
+                    full(Bytes::from(text))
                 }
                 None => full(bytes),
             }
