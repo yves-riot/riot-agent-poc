@@ -124,29 +124,4 @@ final class AppModel: ObservableObject, GuardBackend, BlockingBackend {
         let ok: Nothing? = try? await client.call("grantFileBypass", ["eventId": eventId])
         return ok != nil
     }
-
-    func diagnostics() async -> String {
-        guard let client else { return "daemon: not connected (\(DaemonClient.socketPath))" }
-        guard let data: AnyJSON = try? await client.call("status") else { return "status unavailable" }
-        return data.pretty
-    }
-}
-
-/// Any JSON value, for the diagnostics dump.
-struct AnyJSON: Decodable {
-    let value: Any
-    init(from decoder: Decoder) throws {
-        let c = try decoder.singleValueContainer()
-        if c.decodeNil() { value = NSNull() }
-        else if let b = try? c.decode(Bool.self) { value = b }
-        else if let n = try? c.decode(Double.self) { value = n }
-        else if let s = try? c.decode(String.self) { value = s }
-        else if let a = try? c.decode([AnyJSON].self) { value = a.map(\.value) }
-        else { value = try c.decode([String: AnyJSON].self).mapValues(\.value) }
-    }
-    var pretty: String {
-        guard let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed])
-        else { return "\(value)" }
-        return String(decoding: data, as: UTF8.self)
-    }
 }

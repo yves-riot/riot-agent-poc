@@ -2,10 +2,9 @@ import AppKit
 import SwiftUI
 
 /// The menu bar popup: the extension's toolbar popup (entrypoints/popup/App.vue) plus what only
-/// the native agent knows (protected apps, clipboard permission, recent activity, diagnostics).
+/// the native agent knows (protected apps, clipboard permission, recent activity).
 struct MenuPopup: View {
     @EnvironmentObject var model: AppModel
-    @State private var diagnostics: String?
     private let l = L10n.shared
 
     var body: some View {
@@ -32,10 +31,6 @@ struct MenuPopup: View {
                 set: { model.popupMode = $0 ? "full" : "lite" }))
                 .toggleStyle(.switch).font(.callout)
             footer
-            if let diagnostics {
-                ScrollView { Text(diagnostics).font(.system(.caption, design: .monospaced)).textSelection(.enabled) }
-                    .frame(maxHeight: 220)
-            }
         }
         .padding(24)
         .frame(width: 360)
@@ -126,10 +121,6 @@ struct MenuPopup: View {
 
     private var footer: some View {
         HStack {
-            Button(l.t("agent.diagnostics")) {
-                Task { diagnostics = diagnostics == nil ? await model.diagnostics() : nil }
-            }
-            .buttonStyle(.link)
             Spacer()
             Button(l.t("agent.quit")) { NSApp.terminate(nil) }.buttonStyle(.link)
         }
