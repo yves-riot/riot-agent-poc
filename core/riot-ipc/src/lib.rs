@@ -189,6 +189,11 @@ pub struct EsConfig {
     pub watched: Vec<WatchedApp>,
     /// Lower-case file extensions the engine scans (`pdf`, `docx`, …).
     pub extensions: Vec<String>,
+    /// Lower-case hosts whose traffic the gateway decrypts and redacts (`api.anthropic.com`).
+    /// While the daemon is unreachable, the network extension closes protected apps' flows to
+    /// them rather than let them out unredacted.
+    #[serde(default)]
+    pub api_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -177,12 +177,8 @@ impl Agent {
 
     pub fn es_config(&self) -> EsConfig {
         let state = self.state.read().unwrap();
-        let watched = state
-            .config
-            .as_ref()
-            .and_then(|c| c.active_policy())
-            .into_iter()
-            .flat_map(|p| p.services.iter())
+        let services = || state.config.as_ref().and_then(|c| c.active_policy()).into_iter().flat_map(|p| p.services.iter());
+        let watched = services()
             .flat_map(|s| s.desktop_apps.iter())
             .filter(|a| a.platform == PLATFORM && !a.executable_prefixes.is_empty())
             .filter_map(|a| {
@@ -195,7 +191,10 @@ impl Agent {
             .collect();
         // The formats `scanFile` understands (riot-detect / sonar-detection extractors).
         let extensions = ["pdf", "docx", "xlsx", "csv", "txt"].map(String::from).to_vec();
-        EsConfig { watched, extensions }
+        let mut api_hosts: Vec<String> = services().flat_map(|s| s.api_hosts.iter()).map(|h| h.to_ascii_lowercase()).collect();
+        api_hosts.sort();
+        api_hosts.dedup();
+        EsConfig { watched, extensions, api_hosts }
     }
 
     // ---------- text ----------

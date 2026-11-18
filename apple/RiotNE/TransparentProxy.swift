@@ -9,8 +9,13 @@ import NetworkExtension
 ///
 /// A claimed TCP flow is handed to the daemon as a CONNECT on `flows.sock`; the daemon reads
 /// the ClientHello and either decrypts it (an AI host of the policy) or tunnels it. A claimed
-/// UDP flow is closed: QUIC fails and the app falls back to TCP. Flows of other processes, and
-/// every flow while the daemon is unreachable, are left to the system untouched.
+/// UDP flow is closed: QUIC fails and the app falls back to TCP. Flows of other processes are
+/// left to the system untouched.
+///
+/// Fail-closed: while the daemon is unreachable, a protected app's TCP flow to an AI host of the
+/// policy, or to an address whose name the system does not know, is refused rather than let out
+/// unredacted; its other flows (telemetry, updates) go out as they are. The policy is the last
+/// one the daemon gave, saved across restarts.
 final class TransparentProxy: NETransparentProxyProvider, NEAppProxyUDPFlowHandling {
     private let policy = PolicyLink()
     private let identities = ProcessIdentities()
@@ -38,29 +43,48 @@ final class TransparentProxy: NETransparentProxyProvider, NEAppProxyUDPFlowHandl
     }
 
     override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
+        let state = policy.state
         guard let tcp = flow as? NEAppProxyTCPFlow,
-              let app = protectedApp(flow),
+              let app = protectedApp(flow, state.policy),
               let target = Self.target(of: tcp) else { return false }
+        guard state.daemonUp else {
+            guard Self.mayReachAI(tcp, state.policy) else { return false }
+            log.error("\(app, privacy: .public) → \(target, privacy: .public): refused, the daemon is unreachable")
+            Self.refuse(flow)
+            return true
+        }
         log.notice("\(app, privacy: .public) → \(target, privacy: .public)")
         FlowRelay(flow: tcp, target: target, app: app, socket: PolicyLink.flowSocketPath).start()
         return true
     }
 
     func handleNewUDPFlow(_ flow: NEAppProxyUDPFlow, initialRemoteFlowEndpoint remoteEndpoint: Network.NWEndpoint) -> Bool {
-        guard protectedApp(flow) != nil else { return false }
+        guard protectedApp(flow, policy.state.policy) != nil else { return false }
         // QUIC to port 443: refused, so that the app retries over TCP, which the daemon sees.
+        Self.refuse(flow)
+        return true
+    }
+
+    /// Claimed, then closed: the app sees a connection that ends at once.
+    private static func refuse(_ flow: NEAppProxyFlow) {
         flow.open(withLocalFlowEndpoint: nil) { _ in
             flow.closeReadWithError(nil)
             flow.closeWriteWithError(nil)
         }
-        return true
+    }
+
+    /// Whether the flow may carry a prompt: to an AI host, or to an address the system has no
+    /// name for (only the ClientHello would tell, and nothing reads it without the daemon).
+    private static func mayReachAI(_ flow: NEAppProxyTCPFlow, _ policy: Policy) -> Bool {
+        guard let hostname = flow.remoteHostname, !hostname.isEmpty else { return true }
+        return policy.isAIHost(hostname)
     }
 
     /// `bundleId (pid N)` of the protected app the flow's process belongs to.
-    private func protectedApp(_ flow: NEAppProxyFlow) -> String? {
+    private func protectedApp(_ flow: NEAppProxyFlow, _ policy: Policy) -> String? {
         guard let token = flow.metaData.sourceAppAuditToken,
               let process = identities.identify(auditToken: token),
-              let app = policy.snapshot.app(teamId: process.teamId, executable: process.executable) else { return nil }
+              let app = policy.app(teamId: process.teamId, executable: process.executable) else { return nil }
         return "\(app) (\(flow.metaData.sourceAppSigningIdentifier), pid \(process.pid))"
     }
 

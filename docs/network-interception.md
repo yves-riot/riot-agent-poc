@@ -325,8 +325,15 @@ profile (`com.apple.vpn.managed`, `VPNType` `TransparentProxy`).
   those whose process belongs to a protected app: the signing team id from the flow's audit
   token, or the executable's folder for apps without one (the daemon's `esConfig`, as RiotES).
   A flow is not claimed by process tree: Codex's app-server daemon is launched by launchd.
-  Other processes' flows, and every flow while the daemon is unreachable, are left to the
-  system.
+  Other processes' flows are left to the system.
+- **Without the daemon: fail-closed.** While the daemon's socket is closed, a protected app's
+  TCP flow to an AI host of the policy (`esConfig`'s `apiHosts`), or to an address the system
+  has no name for, is opened and closed at once instead of going out unredacted; its other
+  flows (telemetry, updates) go out as they are. The extension saves the last policy the
+  daemon gave (`/Library/Application Support/com.tryriot.agent/network-policy.json`, root,
+  `0600`), so that it still applies after a restart while the daemon is down. Before a first
+  policy (a fresh install), nothing is protected. A flow the daemon cannot take (no
+  `flows.sock`, a refused CONNECT) is closed too.
 - **TCP.** A claimed flow becomes a CONNECT on `flows.sock` (next to the daemon's socket, mode
   `0600`, root or the daemon's user only), to the name the app asked for when the system knows
   it, else to the address. The flow is opened once the daemon answers `200`, then bytes go both
@@ -384,8 +391,14 @@ payload installs from a manual profile.
   go out untouched. Some claimed flows are aborted by the app before the daemon answers: the
   losers of its parallel IPv4/IPv6 connects.
 
-To check: the ChatGPT app (its title request, `ws.chatgpt.com`), Claude Desktop (step 4), the
-fallback from QUIC, and the daemon down.
+- **The daemon stopped**: the extension noticed at once; Claude Code's flows to
+  `api.anthropic.com`, Codex's to `chatgpt.com` and Claude Desktop's to bare addresses were
+  refused, Claude Code's Datadog flows went out. Killed with the daemon still down, the
+  extension was restarted by the system with the saved policy and kept refusing. The daemon
+  back, the extension reconnected within 2 s and flows were redacted again.
+
+To check: the ChatGPT app (its title request, `ws.chatgpt.com`), Claude Desktop (step 4), and
+the fallback from QUIC.
 
 ### Seeing the values (development builds)
 

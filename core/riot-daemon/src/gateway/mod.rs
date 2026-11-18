@@ -725,6 +725,12 @@ mod tests {
         Arc::new(agent)
     }
 
+    #[test]
+    fn the_network_extension_learns_the_api_hosts() {
+        let agent = agent("hosts", &["API.anthropic.com", "api.anthropic.com", "claude.ai"]);
+        assert_eq!(agent.es_config().api_hosts, ["api.anthropic.com", "claude.ai"]);
+    }
+
     /// A Messages API stand-in: records each request body and streams back the last user
     /// text, three bytes per event, as the model would repeat it.
     async fn fake_api() -> (String, Arc<Mutex<Vec<Value>>>) {
