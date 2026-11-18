@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -49,6 +49,22 @@ pub struct State {
     blocked_files: HashMap<String, FileIdentity>,
     bypasses: Vec<(FileIdentity, Instant)>,
     scan_cache: HashMap<FileIdentity, (ScanFileResult, Instant)>,
+    /// Set by root (`riotctl pause`, as `dev/run-dev.sh` does on a Mac where the agent is
+    /// installed): no policy applies until `resume` or the daemon's next start.
+    pub paused: bool,
+    /// The process the pause lasts for, if any (`dev/run-dev.sh`): `watch_pause` resumes once
+    /// it is gone, however it ended.
+    pause_owner: Option<u32>,
+}
+
+impl State {
+    /// The policy that applies: the active one, unless paused.
+    pub fn policy(&self) -> Option<&riot_api::SonarPolicy> {
+        if self.paused {
+            return None;
+        }
+        self.config.as_ref()?.active_policy()
+    }
 }
 
 struct Redaction {
@@ -143,7 +159,7 @@ impl Agent {
 
     fn target_where(&self, matches: impl Fn(&riot_api::MonitoredService) -> bool) -> Option<Target> {
         let state = self.state.read().unwrap();
-        let policy = state.config.as_ref()?.active_policy()?;
+        let policy = state.policy()?;
         let service = policy.services.iter().find(|s| matches(s))?;
         let categories: BTreeMap<String, bool> =
             policy.data_types.iter().map(|d| (d.data_type.clone(), d.enabled)).collect();
@@ -157,7 +173,7 @@ impl Agent {
 
     pub fn target_apps(&self) -> Vec<TargetApp> {
         let state = self.state.read().unwrap();
-        let Some(policy) = state.config.as_ref().and_then(|c| c.active_policy()) else { return vec![] };
+        let Some(policy) = state.policy() else { return vec![] };
         policy
             .services
             .iter()
@@ -177,7 +193,7 @@ impl Agent {
 
     pub fn es_config(&self) -> EsConfig {
         let state = self.state.read().unwrap();
-        let services = || state.config.as_ref().and_then(|c| c.active_policy()).into_iter().flat_map(|p| p.services.iter());
+        let services = || state.policy().into_iter().flat_map(|p| p.services.iter());
         let watched = services()
             .flat_map(|s| s.desktop_apps.iter())
             .filter(|a| a.platform == PLATFORM && !a.executable_prefixes.is_empty())
@@ -297,7 +313,7 @@ impl Agent {
     /// "Paste the original": the paste's report again, now `redacted: false` (parrot upserts).
     pub fn report_override(&self, paste_id: &str) -> Result<(), IpcError> {
         let mut state = self.state.write().unwrap();
-        if !state.config.as_ref().and_then(|c| c.active_policy()).is_some_and(|p| p.allow_bypass_redaction) {
+        if !state.policy().is_some_and(|p| p.allow_bypass_redaction) {
             return Err(IpcError { code: "forbidden".into(), message: "bypass not allowed by policy".into() });
         }
         let (event_id, pasted_at) = state.pastes.get(paste_id).cloned().ok_or_else(|| bad_request("unknown paste"))?;
@@ -451,7 +467,7 @@ impl Agent {
 
     pub fn grant_file_bypass(&self, event_id: &str) -> Result<(), IpcError> {
         let mut state = self.state.write().unwrap();
-        if !state.config.as_ref().and_then(|c| c.active_policy()).is_some_and(|p| p.allow_bypass_redaction) {
+        if !state.policy().is_some_and(|p| p.allow_bypass_redaction) {
             return Err(IpcError { code: "forbidden".into(), message: "bypass not allowed by policy".into() });
         }
         let identity = *state.blocked_files.get(event_id).ok_or_else(|| bad_request("unknown event"))?;
@@ -478,7 +494,7 @@ impl Agent {
         let protected_apps = self.target_apps();
         let state = self.state.read().unwrap();
         let workspace = state.config.as_ref().and_then(|c| c.workspace.as_ref());
-        let policy = state.config.as_ref().and_then(|c| c.active_policy());
+        let policy = state.policy();
         let view = if state.settings.is_none() {
             PopupView::NotConfigured
         } else if state.config.is_none() {
@@ -506,6 +522,41 @@ impl Agent {
         }
     }
 
+    /// Root only (the server checks): stops applying the policy, until `resume`, or until
+    /// `while_pid` is gone.
+    pub fn pause(&self, while_pid: Option<u32>) {
+        let mut state = self.state.write().unwrap();
+        state.pause_owner = while_pid;
+        if !std::mem::replace(&mut state.paused, true) {
+            tracing::warn!(while_pid, "policy paused by root");
+            let _ = self.events.send(Event::StateChanged);
+        }
+    }
+
+    pub fn resume(&self) {
+        let mut state = self.state.write().unwrap();
+        state.pause_owner = None;
+        if std::mem::replace(&mut state.paused, false) {
+            tracing::warn!("policy resumed");
+            let _ = self.events.send(Event::StateChanged);
+        }
+    }
+
+    /// Resumes once the process a pause lasts for is gone.
+    pub async fn watch_pause(self: Arc<Self>) {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let owner = self.state.read().unwrap().pause_owner;
+            if let Some(pid) = owner
+                && !process_exists(pid)
+                && self.state.read().unwrap().pause_owner == Some(pid)
+            {
+                tracing::info!(pid, "the process the pause lasted for is gone");
+                self.resume();
+            }
+        }
+    }
+
     pub async fn status(&self) -> Status {
         let engine = self.engine.clone();
         let heap = tokio::task::spawn_blocking(move || engine.heap_stats()).await.ok().and_then(Result::ok);
@@ -515,7 +566,8 @@ impl Agent {
             version: self.version.into(),
             configured: state.settings.is_some(),
             device_id: state.enrollment.as_ref().map(|e| e.device_id.clone()),
-            monitoring: state.config.as_ref().and_then(|c| c.active_policy()).is_some(),
+            monitoring: state.policy().is_some(),
+            paused: state.paused,
             last_sync: state.last_sync.map(|t| t.to_rfc3339()),
             last_error: state.last_error.clone(),
             engine_heap_mib: heap.map_or(0.0, |h| h.malloc_size as f64 / 1_048_576.0),
@@ -523,6 +575,12 @@ impl Agent {
             pending_reports: self.spool.len(),
         }
     }
+}
+
+fn process_exists(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
+    // Signal 0 checks without sending: EPERM still means the process exists.
+    (unsafe { libc::kill(pid, 0) == 0 }) || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Token memory is per user and per app: one user's tokens never resolve in another's session.

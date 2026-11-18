@@ -136,6 +136,16 @@ async fn handle(agent: &Agent, uid: u32, request: Request) -> Result<serde_json:
             agent.refresh.notify_one();
             Ok(serde_json::Value::Null)
         }
+        Request::Pause { .. } | Request::Resume => {
+            if uid != 0 {
+                return Err(IpcError { code: "forbidden".into(), message: "pausing the agent is reserved to root".into() });
+            }
+            match request {
+                Request::Pause { while_pid } => agent.pause(while_pid),
+                _ => agent.resume(),
+            }
+            Ok(serde_json::Value::Null)
+        }
         Request::Subscribe => Ok(serde_json::Value::Null), // handled by the connection loop
     }
 }

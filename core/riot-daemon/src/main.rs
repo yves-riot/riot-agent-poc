@@ -37,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
     let agent = Arc::new(agent::Agent::new(paths, engine)?);
     tokio::spawn(sync::run(agent.clone()));
     tokio::spawn(sync::flush_reports(agent.clone()));
+    tokio::spawn(agent.clone().watch_pause());
 
     let gateway_addr = config::gateway_addr()?;
     tokio::select! {

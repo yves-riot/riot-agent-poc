@@ -99,11 +99,13 @@ desktop app as trusted.
 
 ```json
 { "agent_version": "0.1.0", "os_version": "27.2",
-  "components": { "daemon": "running", "monitoring": true, "engineHeapMib": 10.9,
+  "components": { "daemon": "running", "monitoring": true, "paused": false, "engineHeapMib": 10.9,
                   "pendingReports": 0, "esExtension": null, "menuBarApp": null } }
 ```
 → `204`. Updates `last_seen_at` and `status`. This is the base of the future MDM inventory:
 admins see which Macs run the agent, its version, and whether every component is healthy.
+`paused`: root paused the agent on the Mac (`riotctl pause`, development), which then applies
+no policy.
 
 ## `POST /api/agent/sensitive_data_report`
 

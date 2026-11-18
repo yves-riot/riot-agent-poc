@@ -52,6 +52,16 @@ pub enum Request {
     Subscribe,
     /// Refetch config and policies now.
     Refresh,
+    /// Root only: stop applying the policy (no clipboard guard, no flow taken by the network
+    /// extension, nothing redacted) until `Resume`, the daemon's next start, or, with
+    /// `while_pid`, the end of that process. For development on a Mac where the agent is
+    /// installed.
+    #[serde(rename_all = "camelCase")]
+    Pause {
+        #[serde(default)]
+        while_pid: Option<u32>,
+    },
+    Resume,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +109,9 @@ pub struct Status {
     pub configured: bool,
     pub device_id: Option<String>,
     pub monitoring: bool,
+    /// Paused by root (`Request::Pause`): `monitoring` is then false.
+    #[serde(default)]
+    pub paused: bool,
     pub last_sync: Option<String>,
     pub last_error: Option<String>,
     pub engine_heap_mib: f64,

@@ -29,11 +29,13 @@ core/target/release/riotctl status
 
 | Command     | Does                                                                                     |
 | ----------- | ---------------------------------------------------------------------------------------- |
-| `status`    | Version, configured, device id, monitoring, last sync and error, engine heap, protected apps (installed or not), reports waiting to be sent. |
+| `status`    | Version, configured, device id, monitoring, paused, last sync and error, engine heap, protected apps (installed or not), reports waiting to be sent. |
 | `popup`     | What the menu bar popup shows: view (`loading`, `notConfigured`, `standby`, `signedIn`, `reconnect`, `error`), bot name and icon, company, bypass allowed, protected apps, recent events (content-free). |
 | `refresh`   | Refetch config and policies from parrot now, instead of waiting for the next sync.        |
 | `watch`     | Subscribe and print each pushed event, one JSON line each, until interrupted: `stateChanged`, `fileBlocked` (file name, app, types, bypass allowed). |
 | `es-config` | What the ES extension watches: protected apps' bundle ids, team ids and executable path prefixes, and the file extensions scanned. Empty `watched` when monitoring is off. |
+| `pause [pid]` | Root only. Stop applying the policy until `resume`, the daemon's next start, or, with a pid, the end of that process (checked every second): no protected app, so no clipboard guard, no flow taken by the network extension, nothing redacted; the popup shows `standby`, `status` and the heartbeat `paused`. `dev/run-dev.sh` pauses an installed agent with its own pid. |
+| `resume`    | Root only. Apply the policy again.                                                       |
 
 ### Text
 

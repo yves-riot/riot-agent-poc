@@ -123,6 +123,7 @@ async fn sync_once(agent: &Agent, facts: &DeviceFacts) -> Result<Synced, ApiErro
         components: serde_json::json!({
             "daemon": "running",
             "monitoring": status.monitoring,
+            "paused": status.paused,
             "engineHeapMib": status.engine_heap_mib,
             "pendingReports": status.pending_reports,
             // Reported by the ES extension and the menu bar app once they register (step 3/4).

@@ -918,6 +918,31 @@ mod tests {
         assert_eq!(agent.es_config().api_hosts, ["api.anthropic.com", "claude.ai"]);
     }
 
+    #[test]
+    fn a_paused_agent_applies_no_policy() {
+        let agent = agent("paused", &["api.anthropic.com"]);
+        agent.pause(None);
+        let config = agent.es_config();
+        assert!(config.api_hosts.is_empty() && config.watched.is_empty());
+        assert!(agent.api_target("api.anthropic.com").is_none());
+        agent.resume();
+        assert!(agent.api_target("api.anthropic.com").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_pause_ends_with_the_process_it_lasts_for() {
+        let agent = agent("paused-for", &["api.anthropic.com"]);
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        agent.pause(Some(child.id()));
+        tokio::spawn(agent.clone().watch_pause());
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(agent.api_target("api.anthropic.com").is_none(), "paused while the process runs");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        assert!(agent.api_target("api.anthropic.com").is_some(), "resumed once it is gone");
+    }
+
     /// A Messages API stand-in: records each request body and streams back the last user
     /// text, three bytes per event, as the model would repeat it.
     async fn fake_api() -> (String, Arc<Mutex<Vec<Value>>>) {
