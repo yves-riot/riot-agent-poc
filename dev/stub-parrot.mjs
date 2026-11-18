@@ -38,7 +38,7 @@ const policy = () => ({
           executable_prefixes: ["/Applications/ChatGPT.app/"],
         },
       ],
-      api_hosts: ["chatgpt.com"],
+      api_hosts: ["chatgpt.com", "api.openai.com"],
     },
     {
       service_id: "anthropic",
@@ -57,7 +57,7 @@ const policy = () => ({
           executable_prefixes: ["/Applications/Claude.app/"],
         },
       ],
-      api_hosts: ["api.anthropic.com"],
+      api_hosts: ["api.anthropic.com", "claude.ai"],
     },
   ],
 });
