@@ -90,7 +90,7 @@ history from disk (`~/.codex/sessions`), not from the network.
    2. Responses over WebSocket (done for Codex CLI, below; the ChatGPT app is still to test);
    3. the `NETransparentProxyProvider` extension, which replaces the development entry (code
       and daemon side done, below; not run yet: it needs a signed build);
-   4. protobuf over Connect RPC (Claude Desktop).
+   4. protobuf over Connect RPC (Claude Desktop) (done, below).
 
 ## Local gateway
 
@@ -317,6 +317,82 @@ not an event passes unchanged).
   `chat.openai.com` takes telemetry, `ws.chatgpt.com` is a per-user notification socket. The
   policy can leave them tunnelled.
 
+## Connect RPC (Claude Desktop)
+
+`core/riot-daemon/src/gateway/claude_rpc.rs`, with `connect.rs` (Connect's stream framing) and
+`protobuf.rs` (the wire format, read without a schema). With `claude.ai` among the policy's
+`api_hosts`, the gateway handles every call to
+`claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/<Method>` (and
+`/v1/code/rpc/…`, the same service for Claude Code sessions). Unary calls are
+`application/proto`, streams `application/connect+proto`. The app's other requests to
+`claude.ai` (JSON `/api/…`, `/v1/code/…`) are forwarded as is.
+
+**The schema.** It is not published, and the app ships only part of it: some message types
+(`Conversation`, `Message`, `ContentBlock`, `InlineAttachment`) are in `ion-dist.asar` as JSON
+descriptors, the service and its requests are not. The paths below come from the app's own
+traffic, decoded field by field.
+
+**What is redacted.** The text a message sends: field 2.3 of `PerformAction` (the send
+action). The request is rewritten in place: every other byte is kept, only that string and the
+lengths of the messages around it change. A `PerformAction` that does not parse as protobuf is
+refused (`400`), not sent.
+
+**Signed events.** The app signs each event it sends with a device key (Secure Enclave, or a
+WebCrypto key otherwise; `anthropic.ccr.client_event.v1`): an ECDSA signature over a SHA-256 of
+the event's content, sent beside the action (field 1.17). The content covers the message
+text, so a redacted message no longer matches what the app signed. The server then asks the
+app to sign what it received: a `WorkspaceDeviceSignatureAsk` in the timeline, with the hash of
+the event as the server has it. The app signs it and answers in a second `PerformAction`
+(field 21). The gateway never touches a signature: the device signs the text that was actually
+sent, at the server's request. A first run, decoded whole, showed the ask and the answer; in
+the runs below each redacted message was followed by that second `PerformAction`. If the app
+stopped signing on request, redacted messages would no longer go through.
+
+**What is detokenized.** Every protobuf response of the service, unary or streamed, has its
+tokens replaced in every string, wherever it is: the title (`Conversation.title`), the user's
+message as the server keeps it (the app redraws its bubble from it), the assistant's text. In
+`StreamTimeline` the text comes in two forms. A block snapshot (`1.1.5`, a `ContentBlock`, text
+in field 9) holds the whole text so far. A delta (`1.2`: the block id in field 1, text to
+append in field 2, thinking in field 6) holds the next piece only, which can end inside a
+token (`[EMA`, then `IL_1]`): deltas go through a stream detokenizer per block, which holds a
+token's start back until the next delta. A snapshot drops what its block held back.
+
+Strings are found without a schema: a length-delimited field that parses as a message is taken
+as one, else as a string. The other guess would be unsafe: a nested message can be all
+printable bytes (`J(` then 40 characters is field 9 holding them), and taken as a string, its
+text would change without its length.
+
+**Compression.** `Accept-Encoding` and `Connect-Accept-Encoding` are removed from the request,
+so that responses come back readable. A stream message compressed anyway with gzip is read; a
+restored message is sent on uncompressed, which Connect allows in any stream; another encoding
+passes unread.
+
+### Measured (Claude Desktop 5.11492.5, macOS 26 VM)
+
+Through the network extension, with a `debug-redaction` daemon:
+
+- A new chat, "Mon email est jean.dupont@acme.fr et mon IBAN FR76…": the text left as
+  `[EMAIL_1]` and `[IBAN_1]`, none left in clear. Claude answered that it only saw
+  placeholders, and the app showed the real values in the user's bubble, the title and the
+  answer.
+- A longer answer quoting each value three times: no token appeared while it was written,
+  18 tokens restored.
+- No other request to `claude.ai` held the values (`event_logging`, the other RPCs).
+- Before the stream detokenizer, a token split across deltas showed until the final snapshot
+  replaced it.
+
+### Limits
+
+- Only the send action's text is redacted. An attachment's extracted text
+  (`InlineAttachment.extracted_content`, finding 7), an edited or retried message, and other
+  actions that may carry text are not seen yet: each needs its path, from the app's traffic.
+- `claude.ai` authenticates with a cookie, not an `Authorization` header: every `claude.ai`
+  session on the Mac shares one token scope.
+- Text that happens to parse as a message is not detokenized, unless a whole token falls in
+  one of its would-be fields.
+- `/v1/code/sessions/<id>` (JSON) and `/v1/code/sessions/watch` (SSE) are not read: in these
+  runs nothing showed a token from them.
+
 ## Network extension (`apple/RiotNE`)
 
 `com.tryriot.agent.network.systemextension`, a `NETransparentProxyProvider` in Riot.app
@@ -419,7 +495,7 @@ payload installs from a manual profile.
   extension was restarted by the system with the saved policy and kept refusing. The daemon
   back, the extension reconnected within 2 s and flows were redacted again.
 
-To check: Claude Desktop (step 4).
+- **Claude Desktop**: see [Connect RPC](#connect-rpc-claude-desktop).
 
 ### Seeing the values (development builds)
 

@@ -3,9 +3,10 @@
 //! TLS. Requests to a host the policy lists (`api_hosts`) are redacted on the way out and their
 //! answers detokenized on the way back; everything else passes through untouched.
 //!
-//! Two API formats are rewritten, by path: Anthropic Messages ([`anthropic`], JSON and SSE) and
+//! Three API formats are rewritten, by path: Anthropic Messages ([`anthropic`], JSON and SSE),
 //! OpenAI Responses ([`responses`], over a WebSocket ([`websocket`]) or SSE, as Codex and the
-//! ChatGPT app use it).
+//! ChatGPT app use it), and Claude Desktop's conversation service ([`claude_rpc`], protobuf over
+//! Connect RPC).
 //!
 //! No certificate is involved: the client speaks plain HTTP to loopback. Bodies and headers are
 //! never logged, they carry prompts and credentials.
@@ -19,8 +20,11 @@
 
 mod anthropic;
 mod ca;
+mod claude_rpc;
+mod connect;
 #[cfg(feature = "debug-redaction")]
 mod debug_redaction;
+mod protobuf;
 mod recording;
 mod responses;
 mod sse;
@@ -60,6 +64,9 @@ const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 /// Largest single text redacted: the engine's ceiling for extracted file text. A longer text
 /// is not known to be clean, so the request is refused.
 const MAX_TEXT_BYTES: usize = 1024 * 1024;
+/// Connect's per-message compression of a stream, asked for and given.
+const CONNECT_ACCEPT_ENCODING: &str = "connect-accept-encoding";
+const CONNECT_CONTENT_ENCODING: &str = "connect-content-encoding";
 /// How long a client may take to send its ClientHello once its CONNECT is answered.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 /// Redacted texts remembered per scope. Clients resend the whole conversation on every turn:
@@ -369,6 +376,10 @@ impl Gateway {
             };
             return websocket::relay(req, &url, hooks).await;
         }
+        if let (Some(target), Some(rpc)) = (&target, claude_rpc::method(api_path)) {
+            let scope = scope(&target.service_id, req.headers());
+            return self.claude_rpc(req, &url, host, api_path, rpc, target, scope).await;
+        }
 
         let rewrite = target.is_some() && req.method() == Method::POST && api.is_some();
         let api = api.unwrap_or(Api::Messages);
@@ -430,6 +441,120 @@ impl Gateway {
         *response.status_mut() = status;
         *response.headers_mut() = response_headers;
         Ok(response)
+    }
+
+    /// Claude Desktop's conversation service (`claude_rpc`): the text a `PerformAction` sends
+    /// is redacted, every protobuf response detokenized, unary or streamed.
+    #[allow(clippy::too_many_arguments)]
+    async fn claude_rpc(
+        self: &Arc<Self>,
+        req: Request<Incoming>,
+        url: &str,
+        host: &str,
+        api_path: &str,
+        rpc: &str,
+        target: &Target,
+        scope: String,
+    ) -> Result<Response<Body>, GatewayError> {
+        let method = req.method().clone();
+        let mut headers = forwarded_headers(req.headers());
+        // Responses must come back uncompressed to be detokenized (Connect compresses each
+        // message of a stream on its own).
+        headers.remove(header::ACCEPT_ENCODING);
+        headers.remove(CONNECT_ACCEPT_ENCODING);
+        let body = Limited::new(req.into_body(), MAX_REQUEST_BYTES)
+            .collect()
+            .await
+            .map_err(|e| GatewayError::BadRequest(format!("could not read the request body: {e}")))?
+            .to_bytes();
+        let body = if claude_rpc::sends_text(rpc) {
+            let body = decoded(headers.remove(header::CONTENT_ENCODING), body)?;
+            self.redact_claude_rpc(body, target, &scope)?
+        } else {
+            #[cfg(feature = "debug-redaction")]
+            debug_redaction::forwarded_body(&self.agent.engine, &target.options, host, api_path, headers.get(header::CONTENT_ENCODING).cloned(), body.clone());
+            #[cfg(not(feature = "debug-redaction"))]
+            let _ = (host, api_path);
+            body
+        };
+
+        let upstream = self.client.request(method, url).headers(headers).body(body).send().await.map_err(|e| GatewayError::Upstream(e.to_string()))?;
+        let status = upstream.status();
+        let mut response_headers = forwarded_headers(upstream.headers());
+        let content_type = upstream.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned();
+        let body = if content_type.starts_with("application/connect+proto") {
+            let gzip = upstream.headers().get(CONNECT_CONTENT_ENCODING).is_some_and(|v| v == "gzip");
+            response_headers.remove(header::CONTENT_LENGTH);
+            self.detokenize_connect_stream(upstream, gzip, scope)
+        } else if content_type.starts_with("application/proto") {
+            let encoding = upstream.headers().get(header::CONTENT_ENCODING).cloned();
+            let bytes = upstream.bytes().await.map_err(|e| GatewayError::Upstream(e.to_string()))?;
+            let engine = self.agent.engine.clone();
+            let detokenized = decoded(encoding, bytes.clone())
+                .ok()
+                .and_then(|plain| tokio::task::block_in_place(|| claude_rpc::detokenize_message(&plain, &mut resolver(&engine, &scope))));
+            match detokenized {
+                Some(out) => {
+                    response_headers.remove(header::CONTENT_ENCODING);
+                    response_headers.remove(header::CONTENT_LENGTH);
+                    full(Bytes::from(out))
+                }
+                None => full(bytes),
+            }
+        } else {
+            StreamBody::new(upstream.bytes_stream().map_ok(Frame::data).map_err(std::io::Error::other)).boxed_unsync()
+        };
+        let mut response = Response::new(body);
+        *response.status_mut() = status;
+        *response.headers_mut() = response_headers;
+        Ok(response)
+    }
+
+    /// Redacts a `PerformAction`; reports what it redacted for the first time.
+    fn redact_claude_rpc(&self, body: Bytes, target: &Target, scope: &str) -> Result<Bytes, GatewayError> {
+        let options = Options { max_bytes: Some(MAX_TEXT_BYTES), ..target.options.clone() };
+        let started = Instant::now();
+        let mut detections = vec![];
+        let out = tokio::task::block_in_place(|| {
+            claude_rpc::redact_request(&body, &mut |text| redact_cached(&self.agent.engine, &self.cache, scope, &options, text, &mut detections))
+        })?;
+        let ms = started.elapsed().as_millis() as u64;
+        tracing::info!(api = "ClaudeRpc", ms, bytes = body.len(), new_detections = detections.len(), "gateway redaction");
+        if !detections.is_empty() {
+            self.agent.report_api_redaction(target, &detections);
+        }
+        Ok(out.map(Bytes::from).unwrap_or(body))
+    }
+
+    /// A Connect stream (`StreamTimeline`), each message detokenized.
+    fn detokenize_connect_stream(&self, upstream: reqwest::Response, gzip: bool, scope: String) -> Body {
+        let engine = self.agent.engine.clone();
+        let state = (upstream.bytes_stream(), connect::EnvelopeRewriter::new(gzip), claude_rpc::TimelineDetokenizer::default());
+        let stream = futures_util::stream::unfold(Some(state), move |state| {
+            let (engine, scope) = (engine.clone(), scope.clone());
+            async move {
+                let (mut upstream, mut rewriter, mut timeline) = state?;
+                loop {
+                    match upstream.next().await {
+                        Some(Ok(chunk)) => {
+                            let out = tokio::task::block_in_place(|| {
+                                let mut resolve = resolver(&engine, &scope);
+                                rewriter.push(&chunk, &mut |message| timeline.message(message, &mut resolve))
+                            });
+                            if !out.is_empty() {
+                                return Some((Ok(Frame::data(Bytes::from(out))), Some((upstream, rewriter, timeline))));
+                            }
+                        }
+                        Some(Err(e)) => return Some((Err(std::io::Error::other(e)), None)),
+                        None => {
+                            let rest = rewriter.finish();
+                            return (!rest.is_empty()).then(|| (Ok(Frame::data(Bytes::from(rest))), None));
+                        }
+                    }
+                }
+            }
+        });
+        StreamBody::new(stream).boxed_unsync()
     }
 
     /// Redacts a request body; reports what it redacted for the first time.
@@ -662,6 +787,12 @@ fn forwarded_headers(headers: &HeaderMap) -> HeaderMap {
 
 fn full(bytes: Bytes) -> Body {
     Full::new(bytes).map_err(|never| match never {}).boxed_unsync()
+}
+
+impl From<protobuf::Malformed> for GatewayError {
+    fn from(_: protobuf::Malformed) -> Self {
+        Self::Blocked("the request is not the protobuf message expected".into())
+    }
 }
 
 #[derive(Debug)]
@@ -1164,6 +1295,109 @@ mod tests {
             .send()
             .await
             .unwrap();
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    /// A fake `claude.ai` conversation service: records each request, answers `PerformAction`
+    /// with an empty message and `StreamTimeline` with the last sent text's token, once plain
+    /// and once gzip-compressed.
+    async fn fake_claude_rpc() -> (String, Arc<Mutex<Vec<(String, HeaderMap, Bytes)>>>) {
+        use connect::tests::{envelope, gzip};
+        use protobuf::tests::len_field;
+        let seen = Arc::new(Mutex::new(vec![]));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let recorded = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let recorded = recorded.clone();
+                tokio::spawn(async move {
+                    let service = hyper::service::service_fn(move |req: Request<Incoming>| {
+                        let recorded = recorded.clone();
+                        async move {
+                            let path = req.uri().path().to_owned();
+                            let headers = req.headers().clone();
+                            let body = req.into_body().collect().await.unwrap().to_bytes();
+                            let mut seen = recorded.lock().unwrap();
+                            seen.push((path.clone(), headers, body));
+                            let mut response = if path.ends_with("/StreamTimeline") {
+                                let sent = seen.iter().rev().find(|(p, ..)| p.ends_with("/PerformAction")).map(|(.., b)| String::from_utf8_lossy(b).into_owned()).unwrap_or_default();
+                                let token = sent.find("[EMAIL_").map(|i| &sent[i..=i + sent[i..].find(']').unwrap()]).unwrap_or("none").to_owned();
+                                let text = format!("Ton email : {token}");
+                                let block = len_field(1, &len_field(5, &len_field(9, text.as_bytes())));
+                                let title = len_field(1, &len_field(2, &len_field(2, format!("Email {token}").as_bytes())));
+                                let stream = [envelope(0, &title), envelope(1, &gzip(&block)), envelope(2, b"{}")].concat();
+                                let mut response = Response::new(full(stream.into()));
+                                response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/connect+proto"));
+                                response.headers_mut().insert(CONNECT_CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+                                response
+                            } else {
+                                let mut response = Response::new(full(Bytes::from_static(b"\x30\x01")));
+                                response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/proto"));
+                                response
+                            };
+                            *response.status_mut() = StatusCode::OK;
+                            Ok::<_, Infallible>(response)
+                        }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), service).await;
+                });
+            }
+        });
+        (base, seen)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_claude_desktop_message_is_redacted_and_its_timeline_restored() {
+        use protobuf::tests::len_field;
+        let agent = agent("claude-rpc", &["claude.ai"]);
+        let (upstream, seen) = fake_claude_rpc().await;
+        let (proxy, root) = proxy(agent.clone(), upstream).await;
+        let client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::https(format!("http://{proxy}")).unwrap())
+            .tls_certs_only([reqwest::Certificate::from_der(&root).unwrap()])
+            .build()
+            .unwrap();
+        let rpc = |method: &str| format!("https://claude.ai/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/{method}");
+        let text = format!("Mon email est {MAIL}");
+        let attestation = len_field(17, &len_field(1, &[len_field(2, b"user"), len_field(3, &[0xab; 32])].concat()));
+        let action = [len_field(1, &attestation), len_field(2, &[len_field(1, b"message-uuid"), len_field(3, text.as_bytes())].concat())].concat();
+
+        let sent = client.post(rpc("PerformAction")).header(header::CONTENT_TYPE, "application/proto").body(action.clone()).send().await.unwrap();
+        assert_eq!(sent.status(), StatusCode::OK);
+        let upstream_body = seen.lock().unwrap()[0].2.clone();
+        let upstream_text = String::from_utf8_lossy(&upstream_body);
+        assert!(!upstream_text.contains(MAIL) && upstream_text.contains("Mon email est [EMAIL_"), "upstream saw: {upstream_text}");
+        assert!(upstream_body.starts_with(&len_field(1, &attestation)), "the attestation is sent as it was");
+
+        let timeline = client
+            .post(rpc("StreamTimeline"))
+            .header(header::CONTENT_TYPE, "application/connect+proto")
+            .header(CONNECT_ACCEPT_ENCODING, "gzip")
+            .body(Vec::new())
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert!(seen.lock().unwrap()[1].1.get(CONNECT_ACCEPT_ENCODING).is_none(), "messages are asked for uncompressed");
+        let (mut at, mut messages) = (0, vec![]);
+        while at < timeline.len() {
+            let len = u32::from_be_bytes(timeline[at + 1..at + 5].try_into().unwrap()) as usize;
+            messages.push((timeline[at], String::from_utf8_lossy(&timeline[at + 5..at + 5 + len]).into_owned()));
+            at += 5 + len;
+        }
+        assert_eq!(messages.len(), 3);
+        assert!(messages[0].1.contains(&format!("Email {MAIL}")), "title: {:?}", messages[0]);
+        assert_eq!(messages[1].0, 0, "the restored message is sent on uncompressed");
+        assert!(messages[1].1.contains(&format!("Ton email : {MAIL}")), "text: {:?}", messages[1]);
+        assert_eq!(messages[2], (2, "{}".to_owned()));
+
+        // A PerformAction that is not protobuf is refused, not passed on.
+        let refused = client.post(rpc("PerformAction")).header(header::CONTENT_TYPE, "application/proto").body("not protobuf").send().await.unwrap();
         assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
         assert_eq!(seen.lock().unwrap().len(), 2);
     }

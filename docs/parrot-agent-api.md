@@ -80,8 +80,11 @@ It also gains an optional `api_hosts`: the API hosts the local gateway redacts r
 ([network-interception.md](network-interception.md#local-gateway)).
 
 ```json
-"api_hosts": ["api.anthropic.com"]
+"api_hosts": ["api.anthropic.com", "claude.ai"]
 ```
+
+`api.anthropic.com` covers Claude Code, `claude.ai` Claude Desktop's conversations
+([Connect RPC](network-interception.md#connect-rpc-claude-desktop)).
 
 Catalog values seen on a real Mac (Nov 2026): ChatGPT is `com.openai.codex`, Claude Desktop is
 `com.anthropic.claudefordesktop`. The catalog lives next to the extension's
