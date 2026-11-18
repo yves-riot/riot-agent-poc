@@ -31,10 +31,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Observes the model so the icon follows the daemon connection.
+/// Observes the model so the icon follows the daemon connection. A development copy (run from
+/// outside /Applications) says so, to tell it from an installed agent's icon next to it.
 private struct MenuBarIcon: View {
     @ObservedObject var model: AppModel
     var body: some View {
-        Image(systemName: model.connected ? "shield.lefthalf.filled" : "shield.slash")
+        let icon = Image(systemName: model.connected ? "shield.lefthalf.filled" : "shield.slash")
+        if Installer.isInstalledCopy {
+            icon
+        } else {
+            HStack(spacing: 2) {
+                icon
+                Text("DEV").font(.system(size: 9, weight: .bold))
+            }
+        }
     }
 }
