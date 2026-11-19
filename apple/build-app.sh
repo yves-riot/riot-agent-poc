@@ -88,6 +88,14 @@ if [ -d "$app/Contents/Library/SystemExtensions" ]; then
   [ -n "${APP_PROVISIONING_PROFILE:-}" ] && cp "$APP_PROVISIONING_PROFILE" "$app/Contents/embedded.provisionprofile"
   : "${TEAM_ID:?bundling a system extension needs TEAM_ID}"
   sed -e "s/__TEAM_ID__/$TEAM_ID/g" -e "s/__APP_ID__/$app_id/g" "$here/Packaging/Riot.entitlements" > "$here/build/Riot.entitlements"
+  # Starting the MDM's transparent proxy (ProxyKeeper) takes the Network Extensions capability,
+  # which the app's profile then carries too.
+  if [ "${WITH_NE:-0}" = 1 ]; then
+    /usr/libexec/PlistBuddy \
+      -c "Add :com.apple.developer.networking.networkextension array" \
+      -c "Add :com.apple.developer.networking.networkextension:0 string app-proxy-provider-systemextension" \
+      "$here/build/Riot.entitlements"
+  fi
   codesign --force --options runtime --sign "$identity" --entitlements "$here/build/Riot.entitlements" "$app"
 else
   codesign --force --options runtime --sign "$identity" "$app"

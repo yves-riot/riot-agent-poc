@@ -12,6 +12,8 @@ import SystemExtensions
 /// Development runs (outside /Applications) skip all of it.
 @MainActor
 final class Installer: NSObject, OSSystemExtensionRequestDelegate {
+    private var proxyKeeper: ProxyKeeper?
+
     /// The bundled system extensions, named after the app's bundle id; each is activated when
     /// its bundle ships in the app.
     static var extensionIdentifiers: [String] {
@@ -91,6 +93,17 @@ final class Installer: NSObject, OSSystemExtensionRequestDelegate {
     nonisolated func request(_ request: OSSystemExtensionRequest,
                              didFinishWithResult result: OSSystemExtensionRequest.Result) {
         NSLog("riot: %@ activation result %d", request.identifier, result.rawValue)
+        // The transparent proxy runs once its extension is in place (ProxyKeeper).
+        if request.identifier.hasSuffix(".network") {
+            let identifier = request.identifier
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let keeper = self.proxyKeeper ?? ProxyKeeper(providerIdentifier: identifier)
+                    self.proxyKeeper = keeper
+                    keeper.start()
+                }
+            }
+        }
     }
 
     nonisolated func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {

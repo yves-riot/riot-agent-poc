@@ -466,7 +466,12 @@ payload installs from a manual profile.
 - **The payload.** `NEConfiguration` rejects it ("The VPN service could not be created",
   `unsupported authen type (null)` in mdmclient's log) without `AuthenticationMethod`, though
   nothing authenticates. Installed, the session stays idle until something starts it:
-  `OnDemandEnabled` with a single `Connect` rule keeps it running.
+  `OnDemandEnabled` with a single `Connect` rule keeps it running in the VM (manual profile).
+  On a Mac enrolled in Iru (macOS 27.2), the same payload was saved with `OnDemandEnabled`
+  false and the rule kept: the session stayed idle, and System Settings does not let the user
+  start a managed proxy. Riot.app (launchd's copy) therefore starts it once the extension is
+  activated, and again whenever it stops (`ProxyKeeper`); replacing the extension stops it.
+  This takes the Network Extensions capability in the app's provisioning profile too.
 - **An update.** A new extension with the same `CFBundleVersion` is not taken; with a higher
   one (`BUILD_NUMBER`), Riot.app's activation request replaces the running one without a prompt.
 - **Claude Code** (2.1.326, logged in, no `HTTPS_PROXY`): its flows to `api.anthropic.com`
