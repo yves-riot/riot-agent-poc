@@ -65,6 +65,13 @@ pub fn sends_text(method: &str) -> bool {
     method == "PerformAction"
 }
 
+/// Whether a `PerformAction` holds a string at one of the paths where the user's text is known
+/// to be. An action that sends no text has none; neither has a send from an app whose schema
+/// moved the text.
+pub fn has_sent_text(body: &[u8]) -> bool {
+    SENT_TEXT.iter().any(|path| protobuf::string_at(body, path).is_some())
+}
+
 /// Redacts a `PerformAction` request. `None` when nothing changed.
 pub fn redact_request<E: From<Malformed>>(body: &[u8], redact: &mut dyn FnMut(&str) -> Result<String, E>) -> Result<Option<Vec<u8>>, E> {
     let mut current: Option<Vec<u8>> = None;

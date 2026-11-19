@@ -564,6 +564,11 @@ impl Gateway {
         })?;
         let ms = started.elapsed().as_millis() as u64;
         tracing::info!(api = "ClaudeRpc", ms, bytes = body.len(), new_detections = detections.len(), "gateway redaction");
+        if !claude_rpc::has_sent_text(&body) {
+            // Content-free: where the strings are, and how long, to find a text the app moved.
+            let strings: Vec<String> = protobuf::utf8_paths(&body).iter().take(80).map(|(path, len)| format!("{path}:{len}")).collect();
+            tracing::info!(strings = %strings.join(" "), "PerformAction without text at the known paths (path:bytes)");
+        }
         if !detections.is_empty() {
             self.agent.report_api_redaction(target, &detections);
         }

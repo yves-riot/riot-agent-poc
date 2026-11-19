@@ -162,9 +162,41 @@ fn rewrite_strings_at(msg: &[u8], f: &mut dyn FnMut(&str) -> Option<String>, dep
     changed.then_some(out)
 }
 
+/// Every length-delimited field of a message that reads as UTF-8, at any depth: its path
+/// (field numbers, dotted) and its length in bytes. Content-free: it finds where a text went
+/// when an app changes its schema.
+pub fn utf8_paths(msg: &[u8]) -> Vec<(String, usize)> {
+    let mut out = vec![];
+    utf8_paths_at(msg, "", 0, &mut out);
+    out
+}
+
+fn utf8_paths_at(msg: &[u8], prefix: &str, depth: usize, out: &mut Vec<(String, usize)>) {
+    for field in fields(msg).map_while(Result::ok) {
+        let Some(payload) = field.payload else { continue };
+        let path = if prefix.is_empty() { field.number.to_string() } else { format!("{prefix}.{}", field.number) };
+        if std::str::from_utf8(payload).is_ok() {
+            out.push((path.clone(), payload.len()));
+        }
+        // A short string can also parse as a message: both are listed.
+        if is_message(payload, depth + 1) {
+            utf8_paths_at(payload, &path, depth + 1, out);
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn utf8_paths_lists_nested_strings_with_their_length() {
+        let inner = [len_field(3, b"\xff\xfe"), len_field(7, "héllo".as_bytes())].concat();
+        let msg = [len_field(1, b"\xff"), len_field(2, &inner)].concat();
+        let paths = utf8_paths(&msg);
+        assert!(paths.contains(&("2.7".to_owned(), 6)), "{paths:?}");
+        assert!(!paths.iter().any(|(p, _)| p == "1" || p == "2.3"), "{paths:?}");
+    }
 
     /// A field holding `payload` (a string or an encoded message).
     pub fn len_field(number: u64, payload: &[u8]) -> Vec<u8> {
