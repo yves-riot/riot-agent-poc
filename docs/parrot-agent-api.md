@@ -8,7 +8,7 @@ one admin policy drives both products.
 
 | Call | Credential |
 |---|---|
-| `POST enroll` | `Authorization: Bearer rbx_…` (the workspace secret the extension already uses) + `X-Workspace-Id` |
+| `POST enroll` | `Authorization: Bearer rbx_…` (the workspace secret the extension already uses; parrot finds the workspace from it) |
 | everything else | `Authorization: Bearer <device_token>` from `enroll` |
 
 Every call also sends `X-Agent-Version`. A 401 on the device token makes the agent drop it and
@@ -20,15 +20,15 @@ the device token is new (store its SHA-256, like the workspace secret).
 
 ```json
 {
-  "workspace_id": "…", "hardware_uuid": "…", "serial_number": "C02…", "hostname": "…",
+  "hardware_uuid": "…", "serial_number": "C02…", "hostname": "…",
   "os": "macos", "os_version": "27.2", "agent_version": "0.1.0",
   "employee_email": "camille.martin@acme.com"
 }
 ```
 → `200 {"device_id": "uuid", "device_token": "rad_…"}`
 
-- Idempotent on `(workspace_id, hardware_uuid)`: re-enrolling the same Mac returns the same
-  `device_id` and rotates the token.
+- Idempotent on `(workspace_id, hardware_uuid)`, the workspace being the `rbx_` secret's:
+  re-enrolling the same Mac returns the same `device_id` and rotates the token.
 - `employee_email` comes from the MDM's variable substitution and may be absent. Resolve the
   employee by email (active employees of the workspace); keep `employee_id` null when unmatched.
 - Link to `Parrot.Devices` (`employee_devices`) by serial number / hardware id when the device is

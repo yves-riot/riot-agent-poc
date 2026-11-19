@@ -1,6 +1,5 @@
 {
   "ApiUrl": "http://127.0.0.1:8787/portal",
-  "WorkspaceId": "ws-dev",
   "EnrollmentSecret": "rbx_dev",
   "EmployeeEmail": "camille.martin@example.com"
 }

@@ -29,6 +29,7 @@ use serde_json::{Value, json};
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_PORT: u16 = 7592;
+/// The workspace its secret names.
 const WORKSPACE_ID: &str = "ws-dev";
 const SECRET: &str = "rbx_dev";
 const POLICY: &str = include_str!("../../../../dev/stub-policy.json");
@@ -72,7 +73,7 @@ impl Stub {
         })
     }
 
-    fn route(&self, method: &Method, path: &str, bearer: &str, workspace: &str, body: &Value) -> (StatusCode, Option<Value>) {
+    fn route(&self, method: &Method, path: &str, bearer: &str, body: &Value) -> (StatusCode, Option<Value>) {
         let unauthenticated = (StatusCode::UNAUTHORIZED, Some(json!({ "error": "unauthenticated" })));
         if let (Some(dev), &Method::GET, "/portal/_stub/state") = (&self.dev, method, path) {
             let dev = dev.lock().unwrap();
@@ -81,7 +82,7 @@ impl Stub {
         }
         let mut devices = self.devices.lock().unwrap();
         if (method, path) == (&Method::POST, "/portal/api/agent/enroll") {
-            if bearer != SECRET || workspace != WORKSPACE_ID {
+            if bearer != SECRET {
                 return unauthenticated;
             }
             let id = uuid::Uuid::new_v4().to_string();
@@ -166,7 +167,7 @@ async fn handle(stub: Arc<Stub>, req: Request<Incoming>) -> Result<Response<Full
         Ok(body) => serde_json::from_slice(&body.to_bytes()).unwrap_or(Value::Null),
         Err(_) => Value::Null,
     };
-    let (status, reply) = stub.route(&parts.method, parts.uri.path(), &bearer, &header("x-workspace-id"), &body);
+    let (status, reply) = stub.route(&parts.method, parts.uri.path(), &bearer, &body);
     if stub.dev.is_some() && !body.is_null() {
         tracing::info!(method = %parts.method, path = parts.uri.path(), status = status.as_u16(), %body);
     } else {
@@ -217,23 +218,23 @@ mod tests {
     fn a_device_enrolls_then_gets_the_policy_and_reports() {
         let stub = stub();
         let enroll = json!({ "hostname": "mac", "employee_email": "camille@example.com" });
-        let (status, _) = stub.route(&Method::POST, "/portal/api/agent/enroll", "rbx_wrong", WORKSPACE_ID, &enroll);
+        let (status, _) = stub.route(&Method::POST, "/portal/api/agent/enroll", "rbx_wrong", &enroll);
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-        let (status, reply) = stub.route(&Method::POST, "/portal/api/agent/enroll", SECRET, WORKSPACE_ID, &enroll);
+        let (status, reply) = stub.route(&Method::POST, "/portal/api/agent/enroll", SECRET, &enroll);
         assert_eq!(status, StatusCode::OK);
         let token = reply.unwrap()["device_token"].as_str().unwrap().to_owned();
 
         let report = json!({ "session_id": "s-1", "service_id": "anthropic", "text": { "redacted": true } });
-        let (status, _) = stub.route(&Method::POST, "/portal/api/agent/sensitive_data_report", &token, "", &report);
+        let (status, _) = stub.route(&Method::POST, "/portal/api/agent/sensitive_data_report", &token, &report);
         assert_eq!(status, StatusCode::OK);
-        let (status, config) = stub.route(&Method::GET, "/portal/api/agent/config", &token, "", &Value::Null);
+        let (status, config) = stub.route(&Method::GET, "/portal/api/agent/config", &token, &Value::Null);
         assert_eq!(status, StatusCode::OK);
         let config: riot_api::AgentConfig = serde_json::from_value(config.unwrap()).unwrap();
         let employee = config.employee.unwrap();
         assert_eq!((employee.name.as_str(), employee.redactions_last_30_days), ("camille", 1));
         assert!(config.policies[0].services.iter().any(|s| s.api_hosts.contains(&"claude.ai".to_owned())));
 
-        let (status, _) = stub.route(&Method::GET, "/portal/api/agent/config", "rad_unknown", "", &Value::Null);
+        let (status, _) = stub.route(&Method::GET, "/portal/api/agent/config", "rad_unknown", &Value::Null);
         assert_eq!(status, StatusCode::UNAUTHORIZED, "after a restart the daemon enrolls again");
     }
 
@@ -241,9 +242,9 @@ mod tests {
     fn an_unsubstituted_email_variable_is_no_employee() {
         let stub = stub();
         let enroll = json!({ "hostname": "mac", "employee_email": "$EMAIL" });
-        let (_, reply) = stub.route(&Method::POST, "/portal/api/agent/enroll", SECRET, WORKSPACE_ID, &enroll);
+        let (_, reply) = stub.route(&Method::POST, "/portal/api/agent/enroll", SECRET, &enroll);
         let token = reply.unwrap()["device_token"].as_str().unwrap().to_owned();
-        let (_, config) = stub.route(&Method::GET, "/portal/api/agent/config", &token, "", &Value::Null);
+        let (_, config) = stub.route(&Method::GET, "/portal/api/agent/config", &token, &Value::Null);
         assert_eq!(config.unwrap()["employee"], Value::Null);
     }
 
@@ -252,11 +253,11 @@ mod tests {
         let enroll = json!({ "hostname": "mac", "employee_email": "camille@example.com" });
         let report = json!({ "session_id": "s-1", "service_id": "anthropic", "text": { "redacted": true } });
         for (stub, kept) in [(stub(), false), (Stub::new(true).unwrap(), true)] {
-            let (_, reply) = stub.route(&Method::POST, "/portal/api/agent/enroll", SECRET, WORKSPACE_ID, &enroll);
+            let (_, reply) = stub.route(&Method::POST, "/portal/api/agent/enroll", SECRET, &enroll);
             let token = reply.unwrap()["device_token"].as_str().unwrap().to_owned();
-            stub.route(&Method::POST, "/portal/api/agent/sensitive_data_report", &token, "", &report);
-            stub.route(&Method::POST, "/portal/api/agent/sensitive_data_report", &token, "", &report);
-            let (status, state) = stub.route(&Method::GET, "/portal/_stub/state", "", "", &Value::Null);
+            stub.route(&Method::POST, "/portal/api/agent/sensitive_data_report", &token, &report);
+            stub.route(&Method::POST, "/portal/api/agent/sensitive_data_report", &token, &report);
+            let (status, state) = stub.route(&Method::GET, "/portal/_stub/state", "", &Value::Null);
             if kept {
                 let state = state.unwrap();
                 assert_eq!(state["devices"][0]["hostname"], "mac");

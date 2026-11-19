@@ -6,8 +6,8 @@
     __TEAM_ID__            Riot's Apple Developer team id
     __APP_ID__             Riot.app's bundle id (com.tryriot.agent unless built with another APP_ID)
     __API_URL__            e.g. https://parrot.tryriot.com/portal
-    __WORKSPACE_ID__       the customer's workspace id
-    __ENROLLMENT_SECRET__  the workspace's rbx_ secret (same as the browser extension's)
+    __ENROLLMENT_SECRET__  the workspace's rbx_ secret (same as the browser extension's), which
+                           names the workspace
     __EMPLOYEE_EMAIL__     the MDM's per-device email variable (Iru/Jamf: $EMAIL, Intune: {{mail}})
     __CA_CERT__            the fleet CA's certificate, base64 DER (only with CA_CERT; else payload 6
                            is left out)
@@ -116,7 +116,6 @@
       <key>PayloadUUID</key><string>7A2B4C3D-9E0F-4A1B-B2C3-4D5E6F7A8B94</string>
       <key>PayloadVersion</key><integer>1</integer>
       <key>ApiUrl</key><string>__API_URL__</string>
-      <key>WorkspaceId</key><string>__WORKSPACE_ID__</string>
       <key>EnrollmentSecret</key><string>__ENROLLMENT_SECRET__</string>
       <key>EmployeeEmail</key><string>__EMPLOYEE_EMAIL__</string>
     </dict>

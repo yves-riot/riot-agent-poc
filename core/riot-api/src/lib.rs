@@ -26,7 +26,6 @@ pub type Result<T> = std::result::Result<T, ApiError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnrollRequest {
-    pub workspace_id: String,
     pub hardware_uuid: String,
     pub serial_number: Option<String>,
     pub hostname: String,
@@ -209,7 +208,6 @@ impl Client {
             .http
             .post(self.url("enroll"))
             .bearer_auth(secret)
-            .header("X-Workspace-Id", &request.workspace_id)
             .header("X-Agent-Version", &self.agent_version)
             .json(request)
             .send()

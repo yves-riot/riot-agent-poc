@@ -8,6 +8,7 @@ use std::time::Duration;
 use chrono::Utc;
 use riot_api::{ApiError, Client, EnrollRequest, Heartbeat};
 use riot_ipc::Event;
+use sha2::{Digest, Sha256};
 
 use crate::agent::Agent;
 use crate::config::{ManagedSettings, load_settings};
@@ -151,14 +152,14 @@ async fn ensure_enrolled(
     facts: &DeviceFacts,
 ) -> Result<(Enrollment, bool), ApiError> {
     let current = agent.state.read().unwrap().enrollment.clone();
-    if let Some(e) = current.filter(|e| e.workspace_id == settings.workspace_id && e.api_url == settings.api_url) {
+    let secret_sha256 = hex::encode(Sha256::digest(settings.enrollment_secret.as_bytes()));
+    if let Some(e) = current.filter(|e| e.secret_sha256 == secret_sha256 && e.api_url == settings.api_url) {
         return Ok((e, false));
     }
     let response = client
         .enroll(
             &settings.enrollment_secret,
             &EnrollRequest {
-                workspace_id: settings.workspace_id.clone(),
                 hardware_uuid: facts.hardware_uuid.clone(),
                 serial_number: facts.serial_number.clone(),
                 hostname: facts.hostname.clone(),
@@ -172,7 +173,7 @@ async fn ensure_enrolled(
     let enrollment = Enrollment {
         device_id: response.device_id,
         device_token: response.device_token,
-        workspace_id: settings.workspace_id.clone(),
+        secret_sha256,
         api_url: settings.api_url.clone(),
     };
     if let Err(e) = enrollment.save(&agent.paths.data_dir) {

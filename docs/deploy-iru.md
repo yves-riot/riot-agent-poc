@@ -65,7 +65,7 @@ password of the team's Apple Account.
 And the profile:
 
 ```sh
-TEAM_ID=TEAMID APP_ID=… API_URL=http://127.0.0.1:7592/portal WORKSPACE_ID=ws-dev \
+TEAM_ID=TEAMID APP_ID=… API_URL=http://127.0.0.1:7592/portal \
 ENROLLMENT_SECRET=rbx_dev CA_CERT=~/riot/fleet-ca/gateway-ca.pem \
 mdm/render-profile.sh > riot-agent-fleet.mobileconfig
 ```

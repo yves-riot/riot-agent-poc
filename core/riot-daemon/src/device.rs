@@ -45,7 +45,10 @@ pub struct Enrollment {
     /// `SecretString` keeps the bearer token out of `{:?}` and zeroes it on drop.
     #[serde(serialize_with = "expose_for_storage")]
     pub device_token: SecretString,
-    pub workspace_id: String,
+    /// SHA-256 of the `rbx_` secret it was issued for: another secret (another workspace, or a
+    /// rotated one) enrolls again. Empty in a file from before, which then enrolls again too.
+    #[serde(default)]
+    pub secret_sha256: String,
     pub api_url: String,
 }
 

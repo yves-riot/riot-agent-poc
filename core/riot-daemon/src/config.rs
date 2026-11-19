@@ -13,7 +13,7 @@ pub const DATA_DIR: &str = "/Library/Application Support/com.tryriot.agent";
 #[serde(rename_all = "PascalCase")]
 pub struct ManagedSettings {
     pub api_url: String,
-    pub workspace_id: String,
+    /// The workspace's `rbx_` secret: parrot finds the workspace from it.
     pub enrollment_secret: String,
     /// Per-device MDM variable (e.g. `$EMAIL`); optional, resolves the employee server-side.
     pub employee_email: Option<String>,
@@ -79,14 +79,13 @@ mod tests {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>ApiUrl</key><string>https://parrot.example/portal</string>
-  <key>WorkspaceId</key><string>ws-1</string>
   <key>EnrollmentSecret</key><string>rbx_abc</string>
   <key>EmployeeEmail</key><string>$EMAIL</string>
 </dict></plist>"#,
         )
         .unwrap();
         let s = load_settings(&path).unwrap().unwrap();
-        assert_eq!(s.workspace_id, "ws-1");
+        assert_eq!(s.enrollment_secret, "rbx_abc");
         assert_eq!(s.employee_email, None);
         assert!(load_settings(&dir.join("missing.plist")).unwrap().is_none());
     }
