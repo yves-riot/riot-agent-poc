@@ -83,4 +83,4 @@ $ riotctl bypass <event-id>
 ```
 
 `paste` and `override` send real reports to the configured parrot (the stub's
-`/portal/_stub/state` lists them in dev).
+`/portal/_stub/state` lists them in a dev run, `riot-stub-parrot --dev`).

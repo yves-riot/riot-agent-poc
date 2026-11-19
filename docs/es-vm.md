@@ -36,17 +36,17 @@ DEVELOPER_DIR=$xcode swiftc -O -sdk "$sdk" -target arm64-apple-macos14.0 -swift-
   -o build/es/riot-es
 codesign --force --sign - --entitlements RiotES/RiotES.entitlements build/es/riot-es
 cd ..
-tar -czf - -C core/target/release riot-daemon riotctl -C ../../../apple/build/es riot-es \
-  -C ../../../dev stub-parrot.mjs settings.json -C ../apple/build Riot.app \
+tar -czf - -C core/target/release riot-daemon riotctl riot-stub-parrot -C ../../../apple/build/es riot-es \
+  -C ../../../dev settings.json -C ../apple/build Riot.app \
   | tart exec -i riot-es sh -c 'mkdir -p ~/riot && tar -C ~/riot -xzf -'
 ```
 
-In the VM (the images ship Node through Homebrew), the stub, the daemon and RiotES as root on the
+In the VM, the stub, the daemon and RiotES as root on the
 default socket, then the app:
 
 ```sh
 cd ~/riot
-nohup /opt/homebrew/bin/node stub-parrot.mjs 8787 > stub.log 2>&1 &
+nohup ./riot-stub-parrot 8787 --dev > stub.log 2>&1 &
 sudo env RIOT_SETTINGS=$HOME/riot/settings.json RIOT_DATA_DIR=/var/tmp/riot-data \
   nohup ./riot-daemon > daemon.log 2>&1 &
 sudo env RIOT_DEBUG=1 nohup ./riot-es > es.log 2>&1 &

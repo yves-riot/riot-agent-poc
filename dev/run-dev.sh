@@ -21,7 +21,7 @@ if [ "${RIOT_DEV_BUILD:-1}" = 1 ]; then
   echo "building Riot.app…" >&2
   # A development build: none of a release's signing or bundled extensions.
   env -u SIGN_IDENTITY -u APP_ID -u WITH_ES -u WITH_NE -u WITH_STUB "$root/apple/build-app.sh" >/dev/null
-elif [ ! -x "$app/riot-daemon" ]; then
+elif [ ! -x "$app/riot-daemon" ] || [ ! -x "$root/core/target/release/riot-stub-parrot" ]; then
   echo "no build in apple/build/Riot.app: run without RIOT_DEV_BUILD=0 once" >&2
   exit 1
 fi
@@ -51,7 +51,7 @@ stop() {
 trap stop EXIT
 trap 'exit 130' INT TERM HUP
 
-node "$root/dev/stub-parrot.mjs" 8787 &
+"$root/core/target/release/riot-stub-parrot" 8787 --dev &
 stub=$!
 rm -f "$RIOT_SOCKET"
 RIOT_SETTINGS="$root/dev/settings.json" RIOT_DATA_DIR="$RIOT_DEV_DIR" \

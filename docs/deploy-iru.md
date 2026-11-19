@@ -30,8 +30,8 @@ lasts a year. Production: see "To decide: the CA in production" in
 ### The stub
 
 `riot-stub-parrot` (`core/riot-daemon/src/bin/stub_parrot.rs`), on `127.0.0.1:7592`, as
-`nobody`: enrolls the daemon, gives it the policy of `dev/stub-policy.json` (the same as
-`dev/stub-parrot.mjs`), takes its heartbeats and reports and keeps nothing. Reports stay on the
+`nobody`: enrolls the daemon, gives it the policy of `dev/stub-policy.json` (the same as a
+local run's), takes its heartbeats and reports and keeps nothing. Reports stay on the
 Mac. The popup greets the user by the local part of the email Iru substitutes for `$EMAIL`.
 
 ## Build

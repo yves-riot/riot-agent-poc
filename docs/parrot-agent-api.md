@@ -1,6 +1,6 @@
 # Parrot: agent API (`/portal/api/agent/*`)
 
-What the native agent needs from parrot. `dev/stub-parrot.mjs` implements it for local runs;
+What the native agent needs from parrot. `riot-stub-parrot` (`core/riot-daemon/src/bin/stub_parrot.rs`) implements it for local runs and test fleets;
 `core/riot-api` is the client. Wire shapes reuse the browser extension's where they exist, so
 one admin policy drives both products.
 
