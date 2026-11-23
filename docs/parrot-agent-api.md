@@ -32,10 +32,10 @@ for the device: a stolen `enrollment.json` or log line authenticates nothing.
 
 Every call also sends `X-Agent-Version`.
 
-**Enrollment keys (`rae_`)** are not the browser extension's `rbx_` secret: they only enroll, so a
+**Enrollment keys (`rae_<uuid>_<base64url secret>`)** are not the browser extension's `rbx_` secret: they only enroll, so a
 leak (the MDM's managed preferences are readable by every local user) gives no access to the
 extension's API nor to any enrolled device. A workspace has as many as the admin creates, each
-with a label, an optional expiry and usage cap, and revoked on its own; rotating one breaks no
+with a label and an optional expiry, and revoked on its own; rotating one breaks no
 extension and no enrolled Mac. `rae_<key_id>_<secret>`: parrot finds the key by `key_id` (indexed),
 compares SHA-256(`secret`) in constant time, and takes the workspace from the key. `rbx_` is
 refused.
@@ -78,11 +78,9 @@ approval. A pending device gets no intermediate and every other call is refused;
 enrolls again every 5 minutes and shows "waiting for an admin" meanwhile.
 
 - `employee_email` comes from the MDM's variable substitution and may be absent. It is a claim:
-  resolve the employee by email (active employees of the workspace), and set `employee_verified`
-  only when the MDM's inventory (`Parrot.Devices`, Intune or Google) assigns this serial number to
-  that employee. Keep `employee_id` null when unmatched.
-- Link to `Parrot.Devices` (`employee_devices`) by serial number / hardware id when the device is
-  already known from Intune or Google.
+  resolve the employee by email (active employees of the workspace); `employee_verified` is for
+  when the MDM's inventory confirms it (not done, see Tables). Keep `employee_id` null when
+  unmatched.
 - `ca_csr`: parrot checks its signature (proof of the gateway key) and signs an intermediate for
   its key; nothing else in the request is used (see below).
 
@@ -106,18 +104,38 @@ a device stops its renewals: its intermediate dies within 30 days (clients do no
 revocation for a private root, so the short life is the revocation). Keep each intermediate's
 serial, fingerprint, device and expiry (audit).
 
-## Tables
+## Admin (Riot API, `sonar:write`, `get_agent_root_certificate` `sonar:read`)
+
+| Route | Does |
+|---|---|
+| `POST /v3/generate_agent_enrollment_key` `{label, expires_in_days?}` | returns `{id, label, enrollment_key, expires_at}`, the key shown once; creates the organization's root on the first call |
+| `POST /v3/revoke_agent_enrollment_key` `{id}` | the key stops enrolling; enrolled Macs keep working |
+| `GET /v3/get_agent_root_certificate` | `{certificate_pem}`, for the profile; 404 until the first key |
+| `POST /v3/approve_agent_device` `{id}` | a pending device becomes active, the Mac's other devices are revoked |
+| `POST /v3/revoke_agent_device` `{id}` | the device's calls are refused, its intermediate is not renewed |
+
+Each one is audit-logged (`agent_enrollment_key.generate`, `.revoke`, `agent_device.approve`,
+`.revoke`, internal actions like `browser_extension_secret.generate`).
+
+## Tables (parrot: `Parrot.DesktopAgent`)
 
 - `agent_enrollment_keys`: `id` (the `key_id`), `workspace_id`, `organization_id`, `secret_hash`,
-  `label`, `expires_at`, `max_uses`, `uses`, `revoked_at`, `created_by`, timestamps.
+  `label`, `expires_at`, `revoked_at`, `uses`, `last_used_at`, timestamps.
 - `agent_devices`: `id`, `workspace_id`, `organization_id`, `employee_id` (nullable),
-  `employee_verified`, `hardware_uuid`, `serial_number`, `hostname`, `os`, `os_version`,
-  `agent_version`, `public_key` (JWK), `public_key_thumbprint`, `approval_status` (`active`,
-  `pending_approval`, `revoked`), `enrollment_key_id`, `last_seen_at`, `status` (jsonb, last
-  heartbeat), `employee_device_id` (nullable), timestamps. Unique `(workspace_id,
-  public_key_thumbprint)`; index `(workspace_id, hardware_uuid)`.
-- `organization_agent_cas`: `organization_id`, `kms_key_id`, `root_cert_der`, `not_after`.
-- `agent_intermediates`: `device_id`, `serial`, `sha256`, `not_after`, `inserted_at`.
+  `employee_verified`, `enrollment_key_id`, `hardware_uuid`, `serial_number`, `hostname`, `os`,
+  `os_version`, `agent_version`, `public_key` (JWK), `public_key_thumbprint`, `approval_status`
+  (`active`, `pending_approval`, `revoked`), `last_seen_at`, `status` (last heartbeat),
+  timestamps. Unique `(workspace_id, public_key_thumbprint)`; index `(workspace_id, hardware_uuid)`.
+- `organization_agent_cas`: `organization_id`, `key_ref` (the KMS key id), `root_cert_der`, `not_after`.
+- `agent_intermediates`: `agent_device_id`, `workspace_id`, `organization_id`, `serial_number`,
+  `sha256`, `not_after`, `created_at`.
+
+Proofs already accepted are kept until they expire in `Parrot.DesktopAgent.ProofReplayCache`
+(Nebulex, replicated), so a `jti` is accepted once across the cluster.
+
+**Not done:** `employee_verified` stays false. Parrot's device inventory (`employee_devices`, from
+Intune and Google) has no serial number column to match the Mac against, so the employee is
+attributed from the MDM's email, as the extension's `X-Employee-Email` is.
 
 ## `GET /api/get_agent_config`
 
