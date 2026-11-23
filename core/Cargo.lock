@@ -1479,13 +1479,18 @@ dependencies = [
 name = "riot-api"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
+ "base64",
  "chrono",
+ "rcgen",
  "reqwest",
- "secrecy",
  "serde",
  "serde_json",
  "thiserror",
+ "time",
+ "url",
  "uuid",
+ "x509-parser",
 ]
 
 [[package]]
@@ -1522,6 +1527,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "x509-parser",
  "zstd",
 ]
 

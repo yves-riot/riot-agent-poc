@@ -34,7 +34,7 @@ Why Rust, QuickJS and native apps: [docs/stack-choices.md](docs/stack-choices.md
 | `apple/RiotES`                       | Endpoint Security system extension                                                                                                      |
 | `apple/RiotNE`                       | network system extension: transparent proxy handing protected apps' TLS flows to the daemon                                             |
 | `apple/build-app.sh`, `build-pkg.sh` | `Riot.app` and the MDM `.pkg`                                                                                                           |
-| `mdm/`                               | configuration profile template + renderer, a test fleet's CA ([docs/deploy-iru.md](docs/deploy-iru.md))                                 |
+| `mdm/`                               | configuration profile template + renderer, Iru audit script ([docs/deploy-iru.md](docs/deploy-iru.md))                                  |
 | `dev/`                               | the stub parrot's policy (`stub-policy.json`, for `riot-stub-parrot`), dev settings, `run-dev.sh`                                       |
 
 ## Run it locally
@@ -224,9 +224,11 @@ redacts Claude Code's API requests (`ANTHROPIC_BASE_URL=http://127.0.0.1:7591/an
   `com.apple.developer.endpoint-security.client` entitlement (request it now; it takes weeks), then
   the system extension path (activation, MDM approval, Full Disk Access) to be run once. Still to
   check: the AUTH_OPEN deadline against large scans (3.3 s per MiB of text today), and ChatGPT.
-- **Parrot endpoints:** specified in `docs/parrot-agent-api.md`, implemented only by the stub.
+- **Parrot endpoints:** specified in `docs/parrot-agent-api.md` (enrollment key, device-key
+  proofs, one intermediate CA per Mac), implemented by the stub and by parrot.
 - **Production hardening:**
-  - device token in the System keychain (now a 0600 file);
+  - the device key and the gateway key in the Secure Enclave (now 0600 files; there is no
+    bearer token on the Mac);
   - IPC peer code-signature check (now uid only, and `scanFile` is root-only);
   - Developer ID signing + notarization (`build-pkg.sh` takes the identities).
   - Building the pkg from a shell that marks its files leaves `._*` AppleDouble entries for

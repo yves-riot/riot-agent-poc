@@ -18,7 +18,8 @@ use tokio::sync::{Notify, broadcast};
 use uuid::Uuid;
 
 use crate::config::{ManagedSettings, Paths};
-use crate::device::Enrollment;
+use crate::device::{Enrollment, Keys};
+use crate::gateway::ca::Authority;
 use crate::reports::Spool;
 
 const PLATFORM: &str = "macos";
@@ -101,6 +102,10 @@ pub struct Agent {
     pub refresh: Notify,
     pub reports_pending: Notify,
     pub version: &'static str,
+    pub keys: Keys,
+    /// The gateway's CA: `None` until parrot signs an intermediate for this Mac, and the hosts
+    /// to decrypt are then refused (fail closed). Replaced on each renewal.
+    pub authority: RwLock<Option<Arc<Authority>>>,
     /// Serialises scans so concurrent opens of one file are scanned once.
     scan_lock: tokio::sync::Mutex<()>,
     last_block_notice: Mutex<HashMap<FileIdentity, Instant>>,
@@ -124,6 +129,7 @@ pub fn internal(message: impl ToString) -> IpcError {
 impl Agent {
     pub fn new(paths: Paths, engine: Engine) -> anyhow::Result<Self> {
         let spool = Spool::new(&paths.data_dir)?;
+        let keys = Keys::load_or_create(&paths.data_dir)?;
         Ok(Self {
             paths,
             engine,
@@ -133,6 +139,8 @@ impl Agent {
             refresh: Notify::new(),
             reports_pending: Notify::new(),
             version: env!("CARGO_PKG_VERSION"),
+            keys,
+            authority: RwLock::new(None),
             scan_lock: tokio::sync::Mutex::new(()),
             last_block_notice: Mutex::new(HashMap::new()),
         }

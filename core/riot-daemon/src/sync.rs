@@ -1,38 +1,48 @@
-//! Background work against parrot: enrollment, config refresh (15 min), heartbeat, and the
-//! report outbox. A rejected device token is dropped and the device enrolls again at once; the
-//! extension's 15 → 30 → 60 min backoff applies when enrolling itself is refused.
+//! Background work against parrot: enrollment, the gateway's intermediate CA, config refresh
+//! (15 min), heartbeat, and the report outbox. When parrot no longer knows the device, it
+//! enrolls again at once, with the same device key; the extension's 15 → 30 → 60 min backoff
+//! applies when enrolling itself is refused (wrong or revoked enrollment key).
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use riot_api::{ApiError, Client, EnrollRequest, Heartbeat};
+use riot_api::{ApiError, Client, DeviceCredential, DeviceStatus, EnrollRequest, Heartbeat};
 use riot_ipc::Event;
 use sha2::{Digest, Sha256};
 
 use crate::agent::Agent;
 use crate::config::{ManagedSettings, load_settings};
-use crate::device::{DeviceFacts, Enrollment, is_installed};
+use crate::device::{DeviceFacts, Enrollment, Intermediate, is_installed};
+use crate::gateway::ca::Authority;
 
 const REFRESH: Duration = Duration::from_secs(15 * 60);
 const UNCONFIGURED_POLL: Duration = Duration::from_secs(60);
+/// While an admin has to approve this Mac.
+const PENDING_POLL: Duration = Duration::from_secs(5 * 60);
+/// The intermediate (30 days) is renewed once less than this is left.
+const RENEW_BEFORE: time::Duration = time::Duration::days(10);
 const ERROR_BACKOFF: [Duration; 4] =
     [Duration::from_secs(15), Duration::from_secs(60), Duration::from_secs(5 * 60), Duration::from_secs(15 * 60)];
 const AUTH_BACKOFF: [Duration; 3] =
     [Duration::from_secs(15 * 60), Duration::from_secs(30 * 60), Duration::from_secs(60 * 60)];
 
 pub async fn run(agent: Arc<Agent>) {
+    if let Some(pem) = Intermediate::load(&agent.paths.data_dir) {
+        install_intermediate(&agent, &pem, false);
+    }
     let facts = DeviceFacts::collect();
     let (mut errors, mut auth_errors) = (0usize, 0usize);
     loop {
         let wait = match sync_once(&agent, &facts).await {
             Ok(Synced::Unconfigured) => UNCONFIGURED_POLL,
+            Ok(Synced::Pending) => PENDING_POLL,
             Ok(Synced::Done) => {
                 (errors, auth_errors) = (0, 0);
                 REFRESH
             }
             Err(ApiError::Unauthenticated) => {
-                // Refused even after enrolling again: wrong or rotated workspace secret.
+                // Refused even after enrolling again: wrong, revoked or expired enrollment key.
                 forget_enrollment(&agent);
                 set_error(&agent, "device not authorized by parrot");
                 auth_errors += 1;
@@ -53,6 +63,8 @@ pub async fn run(agent: Arc<Agent>) {
 
 enum Synced {
     Unconfigured,
+    /// Enrolled, waiting for an admin to approve this Mac's new key.
+    Pending,
     Done,
 }
 
@@ -82,18 +94,27 @@ async fn sync_once(agent: &Agent, facts: &DeviceFacts) -> Result<Synced, ApiErro
     };
 
     let client = Client::new(&settings.api_url, agent.version)?;
-    let (mut enrollment, fresh) = ensure_enrolled(agent, &client, &settings, facts).await?;
-    let config = match client.config(&enrollment.device_token).await {
-        // A stored token parrot no longer knows (device revoked, token rotated, parrot's data
-        // reset): enroll again now rather than after the auth backoff.
+    let (enrollment, fresh) = ensure_enrolled(agent, &client, &settings, facts).await?;
+    if enrollment.status == DeviceStatus::PendingApproval {
+        return Ok(pending(agent, settings));
+    }
+    let mut device = credential(agent, &enrollment);
+    let config = match client.config(&device).await {
+        // A device parrot no longer knows (revoked, or parrot's data reset): enroll again now
+        // rather than after the auth backoff.
         Err(ApiError::Unauthenticated) if !fresh => {
-            tracing::info!(device_id = %enrollment.device_id, "device token rejected; enrolling again");
+            tracing::info!(device_id = %enrollment.device_id, "device rejected; enrolling again");
             forget_enrollment(agent);
-            enrollment = ensure_enrolled(agent, &client, &settings, facts).await?.0;
-            client.config(&enrollment.device_token).await?
+            let enrollment = ensure_enrolled(agent, &client, &settings, facts).await?.0;
+            if enrollment.status == DeviceStatus::PendingApproval {
+                return Ok(pending(agent, settings));
+            }
+            device = credential(agent, &enrollment);
+            client.config(&device).await?
         }
         other => other?,
     };
+    renew_intermediate(agent, &client, &device).await;
 
     let installed = config
         .active_policy()
@@ -132,7 +153,7 @@ async fn sync_once(agent: &Agent, facts: &DeviceFacts) -> Result<Synced, ApiErro
             "menuBarApp": serde_json::Value::Null,
         }),
     };
-    if let Err(e) = client.heartbeat(&enrollment.device_token, &heartbeat).await {
+    if let Err(e) = client.heartbeat(&device, &heartbeat).await {
         tracing::warn!(error = %e, "heartbeat failed");
     }
     agent.reports_pending.notify_one();
@@ -144,7 +165,24 @@ fn forget_enrollment(agent: &Agent) {
     agent.state.write().unwrap().enrollment = None;
 }
 
-/// The device's credential, enrolling when there is none. `true` when it was just issued.
+fn credential(agent: &Agent, enrollment: &Enrollment) -> DeviceCredential {
+    DeviceCredential { device_id: enrollment.device_id.clone(), key: agent.keys.device.clone() }
+}
+
+fn pending(agent: &Agent, settings: crate::config::ManagedSettings) -> Synced {
+    {
+        let mut state = agent.state.write().unwrap();
+        state.settings = Some(settings);
+        state.config = None;
+        state.last_error = Some("waiting for an admin to approve this Mac in Riot".into());
+    }
+    tracing::warn!("this Mac is enrolled with another key; waiting for an admin's approval");
+    let _ = agent.events.send(Event::StateChanged);
+    Synced::Pending
+}
+
+/// The device's enrollment, enrolling when there is none, when it is pending, or when the
+/// enrollment key, the API URL or the device key changed. `true` when it was just made.
 async fn ensure_enrolled(
     agent: &Agent,
     client: &Client,
@@ -152,13 +190,20 @@ async fn ensure_enrolled(
     facts: &DeviceFacts,
 ) -> Result<(Enrollment, bool), ApiError> {
     let current = agent.state.read().unwrap().enrollment.clone();
-    let secret_sha256 = hex::encode(Sha256::digest(settings.enrollment_secret.as_bytes()));
-    if let Some(e) = current.filter(|e| e.secret_sha256 == secret_sha256 && e.api_url == settings.api_url) {
+    let enrollment_key_sha256 = hex::encode(Sha256::digest(settings.enrollment_key.as_bytes()));
+    let device_key_thumbprint = agent.keys.device.thumbprint();
+    if let Some(e) = current.filter(|e| {
+        e.status == DeviceStatus::Active
+            && e.enrollment_key_sha256 == enrollment_key_sha256
+            && e.device_key_thumbprint == device_key_thumbprint
+            && e.api_url == settings.api_url
+    }) {
         return Ok((e, false));
     }
     let response = client
         .enroll(
-            &settings.enrollment_secret,
+            &settings.enrollment_key,
+            &agent.keys.device,
             &EnrollRequest {
                 hardware_uuid: facts.hardware_uuid.clone(),
                 serial_number: facts.serial_number.clone(),
@@ -167,21 +212,65 @@ async fn ensure_enrolled(
                 os_version: facts.os_version.clone(),
                 agent_version: agent.version.into(),
                 employee_email: settings.employee_email.clone(),
+                device_public_key: agent.keys.device.public_jwk(),
+                ca_csr: agent.keys.csr.clone(),
             },
         )
         .await?;
     let enrollment = Enrollment {
         device_id: response.device_id,
-        device_token: response.device_token,
-        secret_sha256,
+        status: response.status,
+        enrollment_key_sha256,
+        device_key_thumbprint,
         api_url: settings.api_url.clone(),
     };
     if let Err(e) = enrollment.save(&agent.paths.data_dir) {
-        tracing::error!(error = %e, "could not persist enrollment; will re-enroll after restart");
+        tracing::error!(error = %e, "could not persist enrollment; will enroll again after restart");
     }
-    tracing::info!(device_id = %enrollment.device_id, "device enrolled");
+    if let Some(pem) = response.intermediate_pem {
+        install_intermediate(agent, &pem, true);
+    }
+    tracing::info!(device_id = %enrollment.device_id, status = ?enrollment.status, "device enrolled");
     agent.state.write().unwrap().enrollment = Some(enrollment.clone());
     Ok((enrollment, true))
+}
+
+/// Asks parrot for a new intermediate when there is none or the current one ends within
+/// [`RENEW_BEFORE`]. A failure keeps the current one, and is retried at the next sync.
+async fn renew_intermediate(agent: &Agent, client: &Client, device: &DeviceCredential) {
+    let due = agent
+        .authority
+        .read()
+        .unwrap()
+        .as_ref()
+        .is_none_or(|a| a.not_after() - time::OffsetDateTime::now_utc() < RENEW_BEFORE);
+    if !due {
+        return;
+    }
+    match client.intermediate(device, &agent.keys.csr).await {
+        Ok(response) => {
+            install_intermediate(agent, &response.intermediate_pem, true);
+        }
+        Err(e) => tracing::warn!(error = %e, "intermediate renewal failed; will retry"),
+    }
+}
+
+/// Makes `pem` the gateway's CA when it is valid for this Mac's gateway key.
+fn install_intermediate(agent: &Agent, pem: &str, save: bool) -> bool {
+    match Authority::new(agent.keys.gateway_pem(), pem) {
+        Ok(authority) => {
+            if save && let Err(e) = Intermediate::save(&agent.paths.data_dir, pem) {
+                tracing::error!(error = %e, "could not persist the intermediate");
+            }
+            tracing::info!(not_after = %authority.not_after(), "gateway intermediate installed");
+            *agent.authority.write().unwrap() = Some(Arc::new(authority));
+            true
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "unusable intermediate");
+            false
+        }
+    }
 }
 
 /// Sends spooled reports whenever one is queued, and retries every minute while some remain.
@@ -191,16 +280,16 @@ pub async fn flush_reports(agent: Arc<Agent>) {
             _ = agent.reports_pending.notified() => {}
             _ = tokio::time::sleep(Duration::from_secs(60)) => {}
         }
-        let (token, url) = {
+        let (device, url) = {
             let state = agent.state.read().unwrap();
             match (&state.enrollment, &state.settings) {
-                (Some(e), Some(s)) => (e.device_token.clone(), s.api_url.clone()),
+                (Some(e), Some(s)) if e.status == DeviceStatus::Active => (credential(&agent, e), s.api_url.clone()),
                 _ => continue,
             }
         };
         let Ok(client) = Client::new(&url, agent.version) else { continue };
         for (path, report) in agent.spool.pending() {
-            match client.report(&token, &report).await {
+            match client.report(&device, &report).await {
                 Ok(()) => agent.spool.done(&path),
                 // 422: parrot will never accept it; keeping it would block the queue forever.
                 Err(ApiError::Status { status: 422, body }) => {

@@ -6,11 +6,11 @@
     __TEAM_ID__            Riot's Apple Developer team id
     __APP_ID__             Riot.app's bundle id (com.tryriot.agent unless built with another APP_ID)
     __API_URL__            e.g. https://parrot.tryriot.com/portal
-    __ENROLLMENT_SECRET__  the workspace's rbx_ secret (same as the browser extension's), which
-                           names the workspace
+    __ENROLLMENT_KEY__     the workspace's agent enrollment key, rae_… (not the browser extension's
+                           rbx_ secret): it only enrolls Macs, and is revoked on its own
     __EMPLOYEE_EMAIL__     the MDM's per-device email variable (Iru/Jamf: $EMAIL, Intune: {{mail}})
-    __CA_CERT__            the fleet CA's certificate, base64 DER (only with CA_CERT; else payload 6
-                           is left out)
+    __CA_CERT__            the organization's root certificate, base64 DER: its key stays in
+                           parrot's KMS, it signs one intermediate CA per Mac
 -->
 <plist version="1.0">
 <dict>
@@ -116,14 +116,13 @@
       <key>PayloadUUID</key><string>7A2B4C3D-9E0F-4A1B-B2C3-4D5E6F7A8B94</string>
       <key>PayloadVersion</key><integer>1</integer>
       <key>ApiUrl</key><string>__API_URL__</string>
-      <key>EnrollmentSecret</key><string>__ENROLLMENT_SECRET__</string>
+      <key>EnrollmentKey</key><string>__ENROLLMENT_KEY__</string>
       <key>EmployeeEmail</key><string>__EMPLOYEE_EMAIL__</string>
     </dict>
 
     <!-- 5. The network extension's transparent proxy: it sees the TCP and UDP flows to port 443
             and claims those of protected apps (docs/network-interception.md). The TLS of the AI
-            hosts is terminated with the Riot CA: payload 6 for a test fleet's shared CA (see
-            "To decide: the CA in production"). -->
+            hosts is terminated with this Mac's intermediate CA, which chains to payload 6. -->
     <dict>
       <key>PayloadType</key><string>com.apple.vpn.managed</string>
       <key>PayloadIdentifier</key><string>com.tryriot.agent.profile.proxy</string>
@@ -149,18 +148,17 @@
       </dict>
     </dict>
 
-    <!-- ca:begin -->
-    <!-- 6. The fleet CA (mdm/fleet-ca.sh), trusted for TLS: name-constrained to the AI domains. -->
+    <!-- 6. The organization's root, trusted for TLS: name-constrained to the AI domains. Only
+            the certificate: the key never leaves parrot. -->
     <dict>
       <key>PayloadType</key><string>com.apple.security.root</string>
       <key>PayloadIdentifier</key><string>com.tryriot.agent.profile.ca</string>
       <key>PayloadUUID</key><string>8B3C5D4E-0F1A-4B2C-93D4-5E6F7A8B9CA5</string>
       <key>PayloadVersion</key><integer>1</integer>
       <key>PayloadDisplayName</key><string>Riot AI gateway</string>
-      <key>PayloadCertificateFileName</key><string>riot-gateway-ca.cer</string>
+      <key>PayloadCertificateFileName</key><string>riot-gateway-root.cer</string>
       <key>PayloadContent</key><data>__CA_CERT__</data>
     </dict>
-    <!-- ca:end -->
 
     <!-- 7. Pasteboard privacy ("Paste from Other Apps", macOS 15.4+): no PPPC key is known for
             it as of this writing; see README "Open questions". If Apple adds one, it goes here. -->

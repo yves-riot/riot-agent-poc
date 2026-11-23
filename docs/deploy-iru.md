@@ -1,48 +1,40 @@
 # Deploying to a test fleet with Iru
 
-Riot.app on Macs managed by Iru, signed with a Developer ID team of our own, without parrot's
-agent API: each Mac runs a stub of it next to the daemon. What it brings: the network
-extension, which redacts Claude Desktop, the ChatGPT app, Claude Code and Codex; the clipboard
-guard. Not the file blocking: the ES extension needs Apple's entitlement.
+Riot.app on Macs managed by Iru, signed with a Developer ID team of our own, enrolled with
+parrot's agent API (staging). What it brings: the network extension, which redacts Claude
+Desktop, the ChatGPT app, Claude Code and Codex; the clipboard guard. Not the file blocking: the ES
+extension needs Apple's entitlement.
 
 ## What gets deployed
 
 - **A configuration profile** (`mdm/riot-agent.mobileconfig`, rendered): pre-approves the
-  network extension, the daemons (Managed Login Items), Full Disk Access for the daemon,
-  sending keys for the menu bar app; sets the transparent proxy; trusts the fleet CA; gives the
-  daemon its settings (the stub's URL, workspace and secret).
-- **A package** (`Riot-<version>-<build>.pkg`): Riot.app in `/Applications` (the menu bar app, the daemon,
-  the stub, the network extension) and the fleet CA's key in
-  `/Library/Application Support/com.tryriot.agent` (root, `0600`). Its postinstall starts the app
-  in the user's session; the app registers the daemon, the stub and itself as a login item, and
-  activates the network extension.
+  network extension, the daemon (Managed Login Items), Full Disk Access for the daemon,
+  sending keys for the menu bar app; sets the transparent proxy; trusts the organization's root;
+  gives the daemon its settings (parrot's URL, the enrollment key).
+- **A package** (`Riot-<version>-<build>.pkg`): Riot.app in `/Applications` (the menu bar app, the
+  daemon, the network extension), and no key. Its postinstall starts the app in the user's
+  session; the app registers the daemon and itself as a login item, and activates the network
+  extension.
 
-### The fleet CA
+### From parrot's admin portal
 
-The daemon terminates the AI hosts' TLS with a CA. On a developer's Mac each daemon creates its
-own, trusted by hand; a profile cannot trust a CA it does not know in advance. A test fleet
-shares one: its certificate in the profile, its key in the package. Whoever gets the key, or
-the package, can read the AI traffic of every Mac of the fleet: keep both out of the repository
-and out of shared drives. The CA can only issue for the AI domains (name constraints), and
-lasts a year. Production: see "To decide: the CA in production" in
-[network-interception.md](network-interception.md).
+- **The enrollment key** (`rae_…`): enrolls Macs into the workspace, and nothing else. Make one
+  per fleet or per rollout, with a label; revoke it once the Macs are enrolled. It is not the
+  browser extension's `rbx_` secret, which the profile must not carry.
+- **The organization's root certificate**: the profile trusts it. Its key stays in parrot's KMS;
+  each Mac generates its own key and parrot signs it an intermediate CA, valid 30 days and
+  renewed by the daemon ([network-interception.md](network-interception.md#the-ca-in-production-decided)).
+  Nothing in the package or on a Mac lets anyone read another Mac's traffic.
+- **Approvals**: a Mac that comes back with a new key (reinstalled, data folder wiped) while its
+  old one is still in use waits for an admin's approval in the portal.
 
-### The stub
-
-`riot-stub-parrot` (`core/riot-daemon/src/bin/stub_parrot.rs`), on `127.0.0.1:7592`, as
-`nobody`: enrolls the daemon, gives it the policy of `dev/stub-policy.json` (the same as a
-local run's), takes its heartbeats and reports and keeps nothing. Reports stay on the
-Mac. The popup greets the user by the local part of the email Iru substitutes for `$EMAIL`.
+Older test-fleet packages shared one CA key and ran a stub of parrot next to the daemon: the new
+daemon deletes that key, and the postinstall unloads the stub. Remove the old fleet CA from the
+profile (it is replaced by the organization's root).
 
 ## Build
 
-Once, the CA, in a folder outside the repository:
-
-```sh
-mdm/fleet-ca.sh ~/riot/fleet-ca
-```
-
-Then the package, with the team's identity and provisioning profiles (an app id whose profiles
+The package, with the team's identity and provisioning profiles (an app id whose profiles
 carry the System Extension and Network Extensions capabilities; a bundle id other than
 `com.tryriot.agent` takes `APP_ID`). Build it in a shell that does not mark the files it writes
 (`com.apple.provenance` turns into `._*` entries in the package; they do no harm, the installer
@@ -53,7 +45,7 @@ network extension whose version did not change.
 ```sh
 SIGN_IDENTITY="Developer ID Application: … (TEAMID)" TEAM_ID=TEAMID APP_ID=… \
 WITH_NE=1 NE_PROVISIONING_PROFILE=… APP_PROVISIONING_PROFILE=… BUILD_NUMBER=… \
-WITH_STUB=1 FLEET_CA_DIR=~/riot/fleet-ca NOTARY_PROFILE=riot apple/build-pkg.sh
+NOTARY_PROFILE=riot apple/build-pkg.sh
 ```
 
 `NOTARY_PROFILE` notarizes Riot.app, then staples it, before packaging it: on a Mac with SIP on,
@@ -65,8 +57,8 @@ password of the team's Apple Account.
 And the profile:
 
 ```sh
-TEAM_ID=TEAMID APP_ID=… API_URL=http://127.0.0.1:7592/portal \
-ENROLLMENT_SECRET=rbx_dev CA_CERT=~/riot/fleet-ca/gateway-ca.pem \
+TEAM_ID=TEAMID APP_ID=… API_URL=https://<parrot staging>/portal \
+ENROLLMENT_KEY=rae_… CA_CERT=riot-root.pem \
 mdm/render-profile.sh > riot-agent-fleet.mobileconfig
 ```
 
@@ -87,14 +79,14 @@ identity: Iru installs it with its agent, as root, without asking Gatekeeper.
 Updates: a new package (higher `BUILD_NUMBER`) in the same custom app, with the audit script of
 the same build. At its next check-in (or `sudo iru run`), the Mac's audit finds an older build
 (`/Applications/Riot.app`'s `CFBundleVersion`) and Iru installs the package. The postinstall
-restarts the app, the daemon and the stub on the new binaries; the app replaces the network
+restarts the app and the daemon on the new binaries; the app replaces the network
 extension. Checking an update on a Mac:
 
 ```sh
 defaults read /Applications/Riot.app/Contents/Info CFBundleVersion   # the new build
 pkgutil --pkg-info com.tryriot.agent.pkg                             # version: 0.1.0.<build>
 systemextensionsctl list                                             # the extension at <build>, [activated enabled]
-pgrep -lf Riot.app                                                   # one RiotAgent, the daemon, the stub
+pgrep -lf Riot.app                                                   # one RiotAgent, the daemon
 ```
 
 ## Checking a Mac
@@ -102,7 +94,8 @@ pgrep -lf Riot.app                                                   # one RiotA
 ```sh
 /Applications/Riot.app/Contents/MacOS/riotctl status   # "monitoring": true, "lastError": null
 systemextensionsctl list                               # the network extension, [activated enabled]
-sudo tail /Library/Logs/Riot/daemon.log                # "device enrolled", "gateway redaction"
+sudo tail /Library/Logs/Riot/daemon.log                # "device enrolled", "gateway intermediate installed", "gateway redaction"
+openssl x509 -noout -subject -enddate -in "/Library/Application Support/com.tryriot.agent/gateway-intermediate.pem"
 log stream --predicate 'subsystem == "<APP_ID>.network"'   # flows claimed by the extension
 ```
 
@@ -110,7 +103,12 @@ In Claude Desktop, a new conversation: "My email is jean.dupont@acme.fr. Spell m
 letter, separated by dashes." Claude only saw a token, and spells `[-E-M-A-I-L-_-1-]`; the user
 sees the email everywhere else.
 
+`"lastError": "waiting for an admin to approve this Mac in Riot"`: approve it in the portal.
+
 ## Measured (macOS 26 VM, not enrolled in an MDM)
+
+The two measurements below predate parrot's agent API: the stub ran next to the daemon and the
+fleet shared one CA key.
 
 With the payloads that need an MDM replaced by hand (background items approved in System
 Settings, the managed settings written to `/Library/Managed Preferences`, which macOS empties at every

@@ -14,8 +14,7 @@ path = "src/main.rs"
 name = "riotctl"
 path = "src/bin/riotctl.rs"
 
-# parrot's agent API, stubbed, for test fleets (bundled with WITH_STUB=1 apple/build-app.sh) and
-# local runs (dev/run-dev.sh, with --dev).
+# parrot's agent API, stubbed, for local runs (dev/run-dev.sh, with --dev) and tests.
 [[bin]]
 name = "riot-stub-parrot"
 path = "src/bin/stub_parrot.rs"
@@ -54,5 +53,6 @@ tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
+x509-parser = { workspace = true }
 zstd = { workspace = true }
 flate2 = { workspace = true }

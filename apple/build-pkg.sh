@@ -3,8 +3,8 @@
 # and apple/build/iru-audit.sh, the audit script that has Iru install it where an older build runs.
 #   SIGN_IDENTITY="Developer ID Application: …" INSTALLER_IDENTITY="Developer ID Installer: …" \
 #   WITH_ES=1 ES_PROVISIONING_PROFILE=… apple/build-pkg.sh
-# (the variables of build-app.sh). FLEET_CA_DIR (mdm/fleet-ca.sh) installs a CA every Mac shares,
-# which the profile trusts; without it, each daemon creates its own, which nothing trusts.
+# (the variables of build-app.sh). The package holds no key: each daemon generates its own, and
+# parrot signs its intermediate CA (docs/network-interception.md).
 # NOTARY_PROFILE notarizes Riot.app before packaging it: a Mac with SIP on refuses a system
 # extension that is not notarized. The profile holds the team's credentials, stored once with
 #   xcrun notarytool store-credentials <profile> --apple-id … --team-id …
@@ -30,12 +30,6 @@ pkg="$here/build/Riot-$version-$build.pkg"
 root="$here/build/pkgroot"
 rm -rf "$root" && mkdir -p "$root/Applications"
 ditto --noextattr --noqtn "$here/build/Riot.app" "$root/Applications/Riot.app"
-if [ -n "${FLEET_CA_DIR:-}" ]; then
-  data="$root/Library/Application Support/com.tryriot.agent"
-  mkdir -p "$data"
-  install -m 0644 "$FLEET_CA_DIR/gateway-ca.pem" "$data/gateway-ca.pem"
-  install -m 0600 "$FLEET_CA_DIR/gateway-ca-key.pem" "$data/gateway-ca-key.pem"
-fi
 export COPYFILE_DISABLE=1
 # Installed where the package says, never "relocated" onto another copy of the app the
 # installer finds elsewhere on the Mac (a build folder, a download).

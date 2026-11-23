@@ -1,5 +1,5 @@
 {
   "ApiUrl": "http://127.0.0.1:8787/portal",
-  "EnrollmentSecret": "rbx_dev",
+  "EnrollmentKey": "rae_dev_stub",
   "EmployeeEmail": "camille.martin@example.com"
 }

@@ -5,7 +5,8 @@
 #   dev/run-dev.sh            then, in another shell:  RIOT_SOCKET=$TMPDIR/riot-dev.sock riotctl status
 # RIOT_DEV_APP=0 runs without the menu bar app; RIOT_DEV_BUILD=0 runs the last build as it is.
 # The gateway (127.0.0.1:7591) is also an HTTPS_PROXY here (RIOT_DEV_PROXY=0 turns it off); its
-# CA is $RIOT_DEV_DIR/gateway-ca.pem. See docs/network-interception.md.
+# certificates chain to the stub's root, $RIOT_DEV_DIR/stub-root.pem: trust that one. See
+# docs/network-interception.md.
 # On a Mac where the agent is installed (a test fleet's), the installed agent is paused for the
 # run (sudo) and resumed when it ends, so that only the dev one guards the clipboard and the AI
 # apps; its daemon still holds 7591, and the dev gateway listens on 7601.
@@ -20,7 +21,7 @@ export RIOT_SOCKET=${RIOT_SOCKET:-${TMPDIR:-/tmp}/riot-dev.sock}
 if [ "${RIOT_DEV_BUILD:-1}" = 1 ]; then
   echo "building Riot.app…" >&2
   # A development build: none of a release's signing or bundled extensions.
-  env -u SIGN_IDENTITY -u APP_ID -u WITH_ES -u WITH_NE -u WITH_STUB "$root/apple/build-app.sh" >/dev/null
+  env -u SIGN_IDENTITY -u APP_ID -u WITH_ES -u WITH_NE "$root/apple/build-app.sh" >/dev/null
 elif [ ! -x "$app/riot-daemon" ] || [ ! -x "$root/core/target/release/riot-stub-parrot" ]; then
   echo "no build in apple/build/Riot.app: run without RIOT_DEV_BUILD=0 once" >&2
   exit 1
@@ -51,7 +52,7 @@ stop() {
 trap stop EXIT
 trap 'exit 130' INT TERM HUP
 
-"$root/core/target/release/riot-stub-parrot" 8787 --dev &
+STUB_CA_DIR="$RIOT_DEV_DIR" "$root/core/target/release/riot-stub-parrot" 8787 --dev &
 stub=$!
 rm -f "$RIOT_SOCKET"
 RIOT_SETTINGS="$root/dev/settings.json" RIOT_DATA_DIR="$RIOT_DEV_DIR" \

@@ -7,9 +7,9 @@
 # the app (registered already, they restart on the new binaries; not registered yet, there is
 # nothing to restart).
 pkill -x RiotAgent
-for label in com.tryriot.agent.daemon com.tryriot.agent.stub-parrot; do
-  launchctl kickstart -k "system/$label" 2>/dev/null
-done
+launchctl kickstart -k system/com.tryriot.agent.daemon 2>/dev/null
+# Older test-fleet builds ran a stub of parrot next to the daemon: parrot serves the agent now.
+launchctl bootout system/com.tryriot.agent.stub-parrot 2>/dev/null
 user=$(stat -f %Su /dev/console)
 [ "$user" = root ] || [ "$user" = loginwindow ] && exit 0 # nobody logged in: see docs/deploy-iru.md
 uid=$(id -u "$user")

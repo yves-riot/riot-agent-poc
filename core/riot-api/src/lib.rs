@@ -1,19 +1,31 @@
-//! Parrot's agent API (`/api/agent/*`, see `docs/parrot-agent-api.md`). The wire shapes reuse the
+//! Parrot's agent API (Portal API routes `/api/…_agent_…`, see `docs/parrot-agent-api.md`). The wire shapes reuse the
 //! browser extension's where they exist: the same `SonarPolicy` (plus `desktop_apps` on each
 //! service) and the same `SendSensitiveDataReportInput`, so one admin policy drives both.
+//!
+//! Auth: `enroll` takes the workspace's `rae_` enrollment key and a proof of the device key it
+//! registers; every other call is authenticated by a proof alone ([`device_key`]). No bearer
+//! token is ever stored on the Mac.
 
+pub mod ca;
+pub mod device_key;
+
+use std::sync::Arc;
 use std::time::Duration;
 
-use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+
+pub use device_key::DeviceKey;
 
 pub const MONITORING_POLICY_KIND: &str = "browser_extension_sensitive_data_monitoring";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
-    /// 401: the device token was revoked or the enrollment secret is wrong.
+    /// 401: the device is unknown or revoked, or the enrollment key is wrong.
     #[error("unauthenticated")]
     Unauthenticated,
+    /// The API URL is not `https` (plain `http` is allowed to loopback only, for the stub).
+    #[error("insecure API URL {0}: https required")]
+    InsecureUrl(String),
     #[error("http {status}: {body}")]
     Status { status: u16, body: String },
     #[error(transparent)]
@@ -32,15 +44,41 @@ pub struct EnrollRequest {
     pub os: String,
     pub os_version: String,
     pub agent_version: String,
-    /// From the MDM's per-device variable substitution; resolves the employee server-side.
+    /// From the MDM's per-device variable substitution. Parrot treats it as a claim: the
+    /// employee counts as verified only when the MDM's inventory assigns this Mac to them.
     pub employee_email: Option<String>,
+    /// The device key's public half, as a JWK ([`DeviceKey::public_jwk`]).
+    pub device_public_key: serde_json::Value,
+    /// A CSR for the gateway's intermediate CA ([`ca::csr_pem`]).
+    pub ca_csr: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceStatus {
+    Active,
+    /// This Mac is already enrolled with another key: an admin must approve the new one.
+    PendingApproval,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct EnrollResponse {
     pub device_id: String,
-    /// `SecretString` keeps the bearer token out of `{:?}` and zeroes it on drop.
-    pub device_token: SecretString,
+    pub status: DeviceStatus,
+    /// The intermediate CA signed for `ca_csr`; `None` while pending.
+    pub intermediate_pem: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IntermediateResponse {
+    pub intermediate_pem: String,
+}
+
+/// What authenticates the device after enrollment: its id and its key.
+#[derive(Debug, Clone)]
+pub struct DeviceCredential {
+    pub device_id: String,
+    pub key: Arc<DeviceKey>,
 }
 
 // ---------- config ----------
@@ -190,8 +228,19 @@ pub struct Client {
 }
 
 impl Client {
-    /// `base` is the portal API root, e.g. `https://parrot.tryriot.dev/portal`.
+    /// `base` is the portal API root, e.g. `https://parrot.tryriot.dev/portal`. Plain `http` is
+    /// refused except to loopback (the development stub).
     pub fn new(base: &str, agent_version: &str) -> Result<Self> {
+        let url = reqwest::Url::parse(base).map_err(|_| ApiError::InsecureUrl(base.into()))?;
+        let loopback = match url.host() {
+            Some(url::Host::Domain(d)) => d == "localhost",
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            None => false,
+        };
+        if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+            return Err(ApiError::InsecureUrl(base.into()));
+        }
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(20))
             .user_agent(format!("riot-agent/{agent_version}"))
@@ -200,14 +249,19 @@ impl Client {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}/api/agent/{path}", self.base)
+        format!("{}/api/{path}", self.base)
     }
 
-    pub async fn enroll(&self, secret: &str, request: &EnrollRequest) -> Result<EnrollResponse> {
+    /// Enrolls with the workspace's enrollment key, registering `key` (proven by a proof whose
+    /// subject is the hardware UUID).
+    pub async fn enroll(&self, enrollment_key: &str, key: &DeviceKey, request: &EnrollRequest) -> Result<EnrollResponse> {
+        let url = self.url("enroll_agent_device");
+        let proof = key.proof(&request.hardware_uuid, "POST", &path_of(&url), now());
         let resp = self
             .http
-            .post(self.url("enroll"))
-            .bearer_auth(secret)
+            .post(url)
+            .bearer_auth(enrollment_key)
+            .header("X-Device-Proof", proof)
             .header("X-Agent-Version", &self.agent_version)
             .json(request)
             .send()
@@ -215,26 +269,38 @@ impl Client {
         decode(resp).await
     }
 
-    pub async fn config(&self, device_token: &SecretString) -> Result<AgentConfig> {
-        let resp = self.authed(self.http.get(self.url("config")), device_token).send().await?;
-        decode(resp).await
+    pub async fn config(&self, device: &DeviceCredential) -> Result<AgentConfig> {
+        decode(self.signed(reqwest::Method::GET, "get_agent_config", device).send().await?).await
     }
 
-    pub async fn heartbeat(&self, device_token: &SecretString, heartbeat: &Heartbeat) -> Result<()> {
-        let resp = self.authed(self.http.post(self.url("heartbeat")), device_token).json(heartbeat).send().await?;
-        check(resp).await
+    pub async fn heartbeat(&self, device: &DeviceCredential, heartbeat: &Heartbeat) -> Result<()> {
+        check(self.signed(reqwest::Method::POST, "send_agent_heartbeat", device).json(heartbeat).send().await?).await
     }
 
-    pub async fn report(&self, device_token: &SecretString, report: &SensitiveDataReport) -> Result<()> {
-        let resp =
-            self.authed(self.http.post(self.url("sensitive_data_report")), device_token).json(report).send().await?;
-        check(resp).await
+    pub async fn report(&self, device: &DeviceCredential, report: &SensitiveDataReport) -> Result<()> {
+        check(self.signed(reqwest::Method::POST, "send_agent_sensitive_data_report", device).json(report).send().await?).await
     }
 
-    /// The only place the device token leaves its `SecretString`.
-    fn authed(&self, req: reqwest::RequestBuilder, device_token: &SecretString) -> reqwest::RequestBuilder {
-        req.bearer_auth(device_token.expose_secret()).header("X-Agent-Version", &self.agent_version)
+    /// A new intermediate for the gateway's key: before the current one expires.
+    pub async fn intermediate(&self, device: &DeviceCredential, ca_csr: &str) -> Result<IntermediateResponse> {
+        let body = serde_json::json!({ "ca_csr": ca_csr });
+        decode(self.signed(reqwest::Method::POST, "renew_agent_intermediate_ca", device).json(&body).send().await?).await
     }
+
+    /// A request carrying a fresh proof bound to its method and path.
+    fn signed(&self, method: reqwest::Method, path: &str, device: &DeviceCredential) -> reqwest::RequestBuilder {
+        let url = self.url(path);
+        let proof = device.key.proof(&device.device_id, method.as_str(), &path_of(&url), now());
+        self.http.request(method, url).bearer_auth(proof).header("X-Agent-Version", &self.agent_version)
+    }
+}
+
+fn path_of(url: &str) -> String {
+    reqwest::Url::parse(url).map(|u| u.path().to_owned()).unwrap_or_default()
+}
+
+fn now() -> i64 {
+    chrono::Utc::now().timestamp()
 }
 
 async fn check(resp: reqwest::Response) -> Result<()> {
@@ -257,4 +323,39 @@ async fn decode<T: for<'de> Deserialize<'de>>(resp: reqwest::Response) -> Result
         return Err(ApiError::Status { status: status.as_u16(), body: resp.text().await.unwrap_or_default() });
     }
     Ok(resp.json().await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plain_http_is_for_loopback_only() {
+        for ok in ["https://parrot.example/portal", "http://127.0.0.1:7592/portal", "http://localhost:8787/portal", "http://[::1]:1/p"] {
+            assert!(Client::new(ok, "0").is_ok(), "{ok}");
+        }
+        for refused in ["http://parrot.example/portal", "http://10.0.0.1/portal", "ftp://x", "not a url"] {
+            assert!(matches!(Client::new(refused, "0"), Err(ApiError::InsecureUrl(_))), "{refused}");
+        }
+    }
+
+    #[test]
+    fn an_intermediate_signed_from_a_csr_is_for_the_requesting_key() {
+        let root_key = rcgen::KeyPair::generate().unwrap();
+        let root = ca::root_params("Riot test root").self_signed(&root_key).unwrap();
+        let issuer = rcgen::Issuer::from_ca_cert_der(root.der(), root_key).unwrap();
+        let mac_key = rcgen::KeyPair::generate().unwrap();
+        let pem = ca::sign_intermediate(&ca::csr_pem(&mac_key).unwrap(), "dev-1", &issuer).unwrap();
+        let der = rustls_pki_der(&pem);
+        let (_, cert) = x509_parser::parse_x509_certificate(&der).unwrap();
+        assert_eq!(cert.public_key().subject_public_key.data.as_ref(), mac_key.public_key_raw());
+        assert!(cert.subject().to_string().contains("dev-1"));
+        assert!(ca::sign_intermediate("-----BEGIN CERTIFICATE REQUEST-----\nAAAA\n-----END CERTIFICATE REQUEST-----\n", "d", &issuer).is_err());
+    }
+
+    fn rustls_pki_der(pem: &str) -> Vec<u8> {
+        use base64::Engine as _;
+        let body: String = pem.lines().filter(|l| !l.starts_with("-----")).collect();
+        base64::engine::general_purpose::STANDARD.decode(body).unwrap()
+    }
 }

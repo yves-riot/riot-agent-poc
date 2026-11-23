@@ -36,11 +36,6 @@ final class Installer: NSObject, OSSystemExtensionRequestDelegate {
         register(SMAppService.daemon(plistName: "com.tryriot.agent.daemon.plist"), "daemon")
         let agent = SMAppService.agent(plistName: "com.tryriot.agent.plist")
         register(agent, "agent")
-        // Test fleets only: parrot's agent API, stubbed (WITH_STUB=1 build-app.sh).
-        let stub = "com.tryriot.agent.stub-parrot.plist"
-        if FileManager.default.fileExists(atPath: Bundle.main.bundleURL.appendingPathComponent("Contents/Library/LaunchDaemons/\(stub)").path) {
-            register(SMAppService.daemon(plistName: stub), "stub parrot")
-        }
         if agent.status == .enabled && !Self.isLaunchAgent {
             Self.startLaunchAgent()
             return true
