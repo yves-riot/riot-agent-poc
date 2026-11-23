@@ -154,11 +154,12 @@ One call for what the extension gets in three (identity, workspace info, policie
 "Account not recognized"). `redactions_last_30_days` should count the employee's redactions from
 both the extension and the agent.
 
-### Policy: one addition
+### Policy: two additions
 
-`SensitiveDataMonitoringService` gains an optional `desktop_apps`; everything else is the
+`SensitiveDataMonitoringService` gains `desktop_apps` and `api_hosts`; everything else is the
 extension's `browser_extension_sensitive_data_monitoring` policy unchanged (`enabled`,
-`allow_bypass_redaction`, `data_types`).
+`allow_bypass_redaction`, `data_types`). Parrot sends both on every service, empty for a service
+the agent does not cover, and to the extension too, which ignores them.
 
 ```json
 "desktop_apps": [
@@ -171,22 +172,27 @@ extension's `browser_extension_sensitive_data_monitoring` policy unchanged (`ena
 |---|---|
 | `platform` | `macos` now, `windows` later (`bundle_id` then becomes an AUMID / exe name) |
 | `bundle_id` | clipboard guard: which frontmost app is protected |
-| `team_id` | signing team, to check before trusting a bundle id (ES side, later) |
+| `team_id` | network extension: a process signed by this team is the app's; otherwise, one under `executable_prefixes` |
 | `executable_prefixes` | ES extension: the processes whose file opens are checked (app + helpers) |
 
-It also gains an optional `api_hosts`: the API hosts the local gateway redacts requests to
-([network-interception.md](network-interception.md#local-gateway)).
+`api_hosts`: the API hosts the local gateway redacts requests to
+([network-interception.md](network-interception.md#local-gateway)). The network extension
+claims a protected app's flows to them only, so a host does nothing without its app in
+`desktop_apps`, except through the development `HTTPS_PROXY`.
 
 ```json
 "api_hosts": ["api.anthropic.com", "claude.ai"]
 ```
 
 `api.anthropic.com` covers Claude Code, `claude.ai` Claude Desktop's conversations
-([Connect RPC](network-interception.md#connect-rpc-claude-desktop)).
+([Connect RPC](network-interception.md#connect-rpc-claude-desktop)). Every host must sit under
+the CA's name constraints (anthropic.com, claude.ai, openai.com, chatgpt.com): a test of the
+catalog checks it.
 
-Catalog values seen on a real Mac (Nov 2026): ChatGPT is `com.openai.codex`, Claude Desktop is
-`com.anthropic.claudefordesktop`. The catalog lives next to the extension's
-(`browser_extension_sensitive_data_monitoring_services.ex`).
+Parrot's catalog (`browser_extension_sensitive_data_monitoring_services.ex`, next to the
+extension's) covers Claude and ChatGPT, with the values `dev/stub-policy.json` has, seen on a
+real Mac (Nov 2026): ChatGPT is `com.openai.codex`, Claude Desktop is
+`com.anthropic.claudefordesktop`.
 
 **Open product question:** services marked `authorized` get account detection in the browser
 (work vs personal account). The agent cannot tell which account a desktop app is signed into, so
