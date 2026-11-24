@@ -67,22 +67,19 @@ impl Keys {
             }
         }
         let device_path = data_dir.join(Self::DEVICE_KEY_FILE);
-        let device = match std::fs::read(&device_path) {
-            Ok(der) => DeviceKey::from_pkcs8(&der)?,
-            Err(_) => {
-                let key = DeviceKey::generate()?;
-                write_private(&device_path, &key.to_pkcs8())?;
-                tracing::info!(thumbprint = key.thumbprint(), "device key created");
-                key
-            }
-        };
         let gateway_path = data_dir.join(Self::GATEWAY_KEY_FILE);
-        let gateway = match std::fs::read_to_string(&gateway_path) {
-            Ok(pem) => rcgen::KeyPair::from_pem(&pem)?,
-            Err(_) => {
-                let key = rcgen::KeyPair::generate()?;
-                write_private(&gateway_path, key.serialize_pem().as_bytes())?;
-                key
+        // Parrot binds a device to the gateway key of its first intermediate: a device key whose
+        // gateway key is lost would never get another one. Both are created together, and a new
+        // pair is a new device.
+        let (device, gateway) = match (std::fs::read(&device_path), std::fs::read_to_string(&gateway_path)) {
+            (Ok(der), Ok(pem)) => (DeviceKey::from_pkcs8(&der)?, rcgen::KeyPair::from_pem(&pem)?),
+            _ => {
+                let device = DeviceKey::generate()?;
+                let gateway = rcgen::KeyPair::generate()?;
+                write_private(&gateway_path, gateway.serialize_pem().as_bytes())?;
+                write_private(&device_path, &device.to_pkcs8())?;
+                tracing::info!(thumbprint = device.thumbprint(), "device and gateway keys created");
+                (device, gateway)
             }
         };
         let csr = riot_api::ca::csr_pem(&gateway)?;
@@ -182,6 +179,12 @@ mod tests {
             assert_eq!(std::fs::metadata(dir.join(file)).unwrap().permissions().mode() & 0o777, 0o600, "{file}");
         }
         assert!(!dir.join("gateway-ca-key.pem").exists());
+
+        // Parrot would never sign for another gateway key on this device: a new pair, a new device.
+        std::fs::remove_file(dir.join("gateway-key.pem")).unwrap();
+        let third = Keys::load_or_create(&dir).unwrap();
+        assert_ne!(third.device.thumbprint(), first.device.thumbprint());
+        assert_ne!(third.gateway_pem(), first.gateway_pem());
     }
 
     #[test]

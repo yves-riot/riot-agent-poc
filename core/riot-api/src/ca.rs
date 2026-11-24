@@ -63,6 +63,13 @@ pub fn csr_pem(key: &KeyPair) -> Result<String, rcgen::Error> {
     CertificateParams::default().serialize_request(key)?.pem()
 }
 
+/// The public key a CSR asks a certificate for (its subjectPublicKey bits), without checking the
+/// request's signature: parrot binds a device to the key of its first intermediate.
+pub fn csr_public_key(csr_pem: &str) -> Result<Vec<u8>, rcgen::Error> {
+    use rcgen::PublicKeyData;
+    Ok(CertificateSigningRequestParams::from_pem(csr_pem)?.public_key.der_bytes().to_vec())
+}
+
 /// What parrot does with a CSR: checks its signature (proof the requester holds the key) and
 /// signs an intermediate for that key, ignoring whatever else the request asks for.
 pub fn sign_intermediate(csr_pem: &str, device_id: &str, issuer: &Issuer<'_, impl SigningKey>) -> Result<String, rcgen::Error> {

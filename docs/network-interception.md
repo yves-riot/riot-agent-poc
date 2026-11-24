@@ -262,7 +262,8 @@ organization root    parrot, key in KMS (never exported); the MDM profile trusts
   in the managed preferences, enrolls a device of one's own. The old shared fleet CA had the same
   reach, for anyone with the package.
 - What bounds it: the name constraints (nothing outside the AI domains); intermediates of
-  7 days, which a revoked device does not renew (clients do not check revocation for a private
+  7 days, which a revoked device does not renew, each for the gateway key of the device's first
+  one (a copied device key alone gets nothing) (clients do not check revocation for a private
   root, so the short life is the revocation); a new device is active only as the first Mac of an
   employee of the workspace ([enrollment](parrot-agent-api.md#post-apienroll_agent_device)), so a
   copied enrollment key gets one device at most per employee not enrolled yet, and every

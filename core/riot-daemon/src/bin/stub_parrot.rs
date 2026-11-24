@@ -66,6 +66,8 @@ struct Device {
     status: Status,
     last_seen: i64,
     employee_email: Option<String>,
+    /// The gateway key of its first intermediate: every later one is for it alone, like parrot.
+    gateway_key: Option<Vec<u8>>,
     /// Report sessions, and whether each was redacted (upserted, like parrot).
     reports: HashMap<String, bool>,
 }
@@ -150,9 +152,9 @@ impl Stub {
         };
         match (req.method, req.path) {
             (&Method::GET, "/portal/api/get_agent_config") => (StatusCode::OK, Some(self.config(device))),
-            (&Method::POST, "/portal/api/renew_agent_intermediate_ca") => match self.sign(req.body, &device.id) {
-                Some(pem) => (StatusCode::OK, Some(json!({ "intermediate_pem": pem }))),
-                None => invalid("ca_csr"),
+            (&Method::POST, "/portal/api/renew_agent_intermediate_ca") => match self.sign(req.body, device) {
+                Ok(pem) => (StatusCode::OK, Some(json!({ "intermediate_pem": pem }))),
+                Err(reply) => reply,
             },
             (&Method::POST, "/portal/api/send_agent_heartbeat") => {
                 self.keep(|dev| {
@@ -215,6 +217,7 @@ impl Stub {
                     status,
                     last_seen: req.now,
                     employee_email: None,
+                    gateway_key: None,
                     reports: HashMap::new(),
                 };
                 devices.insert(id.clone(), device);
@@ -226,9 +229,9 @@ impl Stub {
         device.employee_email = body["employee_email"].as_str().filter(|e| e.contains('@')).map(str::to_owned);
         device.last_seen = req.now;
         let (status, intermediate) = match device.status {
-            Status::Active => match self.sign(body, &id) {
-                Some(pem) => ("active", Some(pem)),
-                None => return invalid("ca_csr"),
+            Status::Active => match self.sign(body, device) {
+                Ok(pem) => ("active", Some(pem)),
+                Err(reply) => return reply,
             },
             _ => ("pending_approval", None),
         };
@@ -268,8 +271,17 @@ impl Stub {
         (StatusCode::NO_CONTENT, None)
     }
 
-    fn sign(&self, body: &Value, device_id: &str) -> Option<String> {
-        riot_api::ca::sign_intermediate(body["ca_csr"].as_str()?, device_id, &self.issuer).ok()
+    /// The device's intermediate, for the gateway key of its first one only. Unlike parrot, it
+    /// signs a new one at every ask.
+    fn sign(&self, body: &Value, device: &mut Device) -> Result<String, Reply> {
+        let csr = body["ca_csr"].as_str().ok_or_else(|| invalid("ca_csr"))?;
+        let key = riot_api::ca::csr_public_key(csr).map_err(|_| invalid("ca_csr"))?;
+        if device.gateway_key.as_ref().is_some_and(|bound| *bound != key) {
+            return Err(invalid("gateway key: not the one of the device's first intermediate"));
+        }
+        let pem = riot_api::ca::sign_intermediate(csr, &device.id, &self.issuer).map_err(|_| invalid("ca_csr"))?;
+        device.gateway_key = Some(key);
+        Ok(pem)
     }
 
     fn keep(&self, f: impl FnOnce(&mut DevState)) {
@@ -470,6 +482,11 @@ mod tests {
         let (status, reply) = mac.call(&stub, id, Method::POST, "/portal/api/renew_agent_intermediate_ca", renew);
         assert_eq!(status, StatusCode::OK);
         assert!(reply.unwrap()["intermediate_pem"].is_string());
+
+        // A device key copied off the Mac gets no intermediate for the copier's own gateway key.
+        let other_key = json!({ "ca_csr": Mac::new("hw-2").csr });
+        let (status, _) = mac.call(&stub, id, Method::POST, "/portal/api/renew_agent_intermediate_ca", other_key);
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[test]

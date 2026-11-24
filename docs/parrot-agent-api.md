@@ -109,8 +109,17 @@ enrolls again every 5 minutes and shows "waiting for an admin" meanwhile.
 
 ## `POST /api/renew_agent_intermediate_ca`
 
-`{"ca_csr": "-----BEGIN CERTIFICATE REQUEST-----…"}` → `200 {"intermediate_pem": "…"}`, `422` on an
-invalid CSR. The agent calls it when its intermediate has less than 3 days left (every ~4 days).
+`{"ca_csr": "-----BEGIN CERTIFICATE REQUEST-----…"}` → `200 {"intermediate_pem": "…"}`, `400`
+`invalid_csr` on an invalid CSR. The agent calls it when its intermediate has less than 3 days
+left (every ~4 days).
+
+A device's first intermediate (at enrollment) binds it to that gateway key: every later one, from
+enrollment or renewal, is for the same key, `400 gateway_key_mismatch` otherwise. A device key
+copied off a Mac therefore gets no intermediate for a key of the copier's own; the copier needs
+the gateway key too. While the current intermediate has more than 3 days left, parrot returns it
+again and signs nothing: that is an agent that restarted without its file, or a copy. The agent
+creates its device key and gateway key together, and a new pair if either is lost: a device
+whose gateway key is gone could never get an intermediate again.
 
 The chain (`core/riot-api/src/ca.rs`):
 
@@ -172,12 +181,13 @@ until the admin uploads the new profile.
   `label`, `expires_at`, `revoked_at`, `uses`, `last_used_at`, timestamps.
 - `agent_devices`: `id`, `workspace_id`, `organization_id`, `employee_id` (nullable),
   `employee_verified`, `enrollment_key_id`, `hardware_uuid`, `serial_number`, `hostname`, `os`,
-  `os_version`, `agent_version`, `public_key` (JWK), `public_key_thumbprint`, `approval_status`
+  `os_version`, `agent_version`, `public_key` (JWK), `public_key_thumbprint`,
+  `gateway_key_sha256` (SHA-256 of the gateway key's SPKI, set by the first intermediate), `approval_status`
   (`active`, `pending_approval`, `revoked`), `last_seen_at`, `status` (last heartbeat),
   timestamps. Unique `(workspace_id, public_key_thumbprint)`; index `(workspace_id, hardware_uuid)`.
 - `organization_agent_cas`: `organization_id`, `key_ref` (the KMS key id), `root_cert_der`, `not_after`.
 - `agent_intermediates`: `agent_device_id`, `workspace_id`, `organization_id`, `serial_number`,
-  `sha256`, `not_after`, `created_at`.
+  `sha256`, `not_after`, `certificate_der` (to answer an early renewal), `created_at`.
 
 Proofs already accepted are kept until they expire in `Parrot.DesktopAgent.ProofReplayCache`
 (Nebulex, replicated), so a `jti` is accepted once across the cluster.
