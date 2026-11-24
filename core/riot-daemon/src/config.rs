@@ -8,10 +8,21 @@ use serde::Deserialize;
 pub const MANAGED_PREFS: &str = "/Library/Managed Preferences/com.tryriot.agent.plist";
 pub const DATA_DIR: &str = "/Library/Application Support/com.tryriot.agent";
 
+/// Production parrot's agent API. A profile names another (`ApiUrl`) only to reach staging or
+/// a development server: in production the URL belongs to the app, which the MDM keeps up to
+/// date, rather than to a profile, which nobody re-uploads. Parrot leaves it out of the
+/// profiles it generates when it is this one (`Parrot.DesktopAgent.MDMProfile`).
+pub const DEFAULT_API_URL: &str = "https://albert.tryriot.com/portal";
+
+fn default_api_url() -> String {
+    DEFAULT_API_URL.to_owned()
+}
+
 /// The keys an admin sets in the MDM profile (see `mdm/riot-agent.mobileconfig`).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub struct ManagedSettings {
+    #[serde(default = "default_api_url")]
     pub api_url: String,
     /// The workspace's agent enrollment key, `rae_<id>_<secret>`: it only enrolls (parrot finds
     /// the workspace from `<id>`). Not the browser extension's `rbx_` secret.
@@ -88,6 +99,16 @@ mod tests {
         let s = load_settings(&path).unwrap().unwrap();
         assert_eq!(s.enrollment_key, "rae_k1_abc");
         assert_eq!(s.employee_email, None);
+        assert_eq!(s.api_url, "https://parrot.example/portal");
         assert!(load_settings(&dir.join("missing.plist")).unwrap().is_none());
+
+        // A production profile leaves the API URL to the app.
+        std::fs::write(
+            &path,
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>EnrollmentKey</key><string>rae_k1_abc</string></dict></plist>"#,
+        )
+        .unwrap();
+        assert_eq!(load_settings(&path).unwrap().unwrap().api_url, DEFAULT_API_URL);
     }
 }

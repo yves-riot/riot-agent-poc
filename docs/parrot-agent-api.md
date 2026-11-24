@@ -99,7 +99,7 @@ The chain (`core/riot-api/src/ca.rs`):
 
 Root and intermediate carry critical name constraints (`anthropic.com`, `claude.ai`, `openai.com`,
 `chatgpt.com`): nothing they sign is valid for another site. One root per organization, created
-when the agent is enabled; the admin portal serves its certificate for the MDM profile. Revoking
+when the agent is enabled; the MDM profile carries its certificate. Revoking
 a device stops its renewals: its intermediate dies within 30 days (clients do not check
 revocation for a private root, so the short life is the revocation). Keep each intermediate's
 serial, fingerprint, device and expiry (audit).
@@ -108,6 +108,7 @@ serial, fingerprint, device and expiry (audit).
 
 | Route | Does |
 |---|---|
+| `POST /v3/generate_agent_mdm_profile` | returns `{profile, filename, enrollment_key_id}`: the whole MDM profile, filled (below), with a new key that does not expire, labelled "MDM profile" |
 | `POST /v3/generate_agent_enrollment_key` `{label, expires_in_days?}` | returns `{id, label, enrollment_key, expires_at}`, the key shown once; creates the organization's root on the first call |
 | `POST /v3/revoke_agent_enrollment_key` `{id}` | the key stops enrolling; enrolled Macs keep working |
 | `GET /v3/get_agent_root_certificate` | `{certificate_pem}`, for the profile; 404 until the first key |
@@ -116,6 +117,28 @@ serial, fingerprint, device and expiry (audit).
 
 Each one is audit-logged (`agent_enrollment_key.generate`, `.revoke`, `agent_device.approve`,
 `.revoke`, internal actions like `browser_extension_secret.generate`).
+
+### The MDM profile
+
+What an admin deploys is the agent app from the MDM's catalog (it carries nothing specific to a
+customer, so one package serves them all, and the MDM updates it) and this profile, uploaded once.
+Parrot fills `mdm/riot-agent.mobileconfig` (its copy: `priv/desktop_agent/riot-agent.mobileconfig.eex`,
+kept in step) with:
+
+- the Apple team that signs the agent (`DESKTOP_AGENT_APPLE_TEAM_ID`; without it the route answers
+  `agent_not_distributed`) and the app's bundle id (`DESKTOP_AGENT_APP_BUNDLE_ID`, default
+  `com.tryriot.agent`);
+- the organization's root, created on the way if needed;
+- a new enrollment key: it does not expire, since an expired key would silently stop new Macs from
+  enrolling, and it only enrolls new Macs. Each call mints one; earlier profiles keep working until
+  their key is revoked;
+- `EmployeeEmail` `$EMAIL`, which Iru, Kandji and Jamf substitute;
+- `ApiUrl` only when parrot is not production (`https://albert.tryriot.com/portal`, the agent's
+  default, `DEFAULT_API_URL`): the URL then moves with the app, which the MDM updates, not with
+  the profile, which nobody re-uploads.
+
+The profile changes only when its key is revoked or the root is replaced. An agent version that
+needs a new payload must keep working without it until the admin uploads the new profile.
 
 ## Tables (parrot: `Parrot.DesktopAgent`)
 

@@ -16,17 +16,20 @@ extension needs Apple's entitlement.
   session; the app registers the daemon and itself as a login item, and activates the network
   extension.
 
-### From parrot's admin portal
+### From parrot
 
-- **The enrollment key** (`rae_…`): enrolls Macs into the workspace, and nothing else. Make one
-  per fleet or per rollout, with a label; revoke it once the Macs are enrolled. It is not the
-  browser extension's `rbx_` secret, which the profile must not carry.
-- **The organization's root certificate**: the profile trusts it. Its key stays in parrot's KMS;
+- **The profile, filled**: `POST /v3/generate_agent_mdm_profile` (the Hub's button, once it has
+  one) returns the whole profile: the organization's root, a new enrollment key (`rae_…`) and,
+  outside production, `ApiUrl` ([parrot-agent-api.md](parrot-agent-api.md#the-mdm-profile)). The
+  key enrolls Macs into the workspace and nothing else, does not expire, and is not the browser
+  extension's `rbx_` secret. Staging needs `DESKTOP_AGENT_APPLE_TEAM_ID` set to the team that
+  signs the test fleet's package (and `DESKTOP_AGENT_APP_BUNDLE_ID` to its `APP_ID`).
+- **The organization's root certificate**, in the profile: its key stays in parrot's KMS;
   each Mac generates its own key and parrot signs it an intermediate CA, valid 30 days and
   renewed by the daemon ([network-interception.md](network-interception.md#the-ca-in-production-decided)).
   Nothing in the package or on a Mac lets anyone read another Mac's traffic.
 - **Approvals**: a Mac that comes back with a new key (reinstalled, data folder wiped) while its
-  old one is still in use waits for an admin's approval in the portal.
+  old one is still in use waits for an admin's approval (`approve_agent_device`).
 
 Older test-fleet packages shared one CA key and ran a stub of parrot next to the daemon: the new
 daemon deletes that key, and the postinstall unloads the stub. Remove the old fleet CA from the
@@ -54,10 +57,11 @@ notarized (`extension failed to validate! uninstalling...`). The credentials are
 `xcrun notarytool store-credentials riot --apple-id … --team-id TEAMID`, with an app-specific
 password of the team's Apple Account.
 
-And the profile:
+And the profile, from parrot (above), or by hand with a key and the root from parrot's admin
+API (`API_URL` left out: production parrot):
 
 ```sh
-TEAM_ID=TEAMID APP_ID=… API_URL=https://<parrot staging>/portal \
+TEAM_ID=TEAMID APP_ID=… API_URL=https://albert.staging.tryriot.com/portal \
 ENROLLMENT_KEY=rae_… CA_CERT=riot-root.pem \
 mdm/render-profile.sh > riot-agent-fleet.mobileconfig
 ```
@@ -103,7 +107,7 @@ In Claude Desktop, a new conversation: "My email is jean.dupont@acme.fr. Spell m
 letter, separated by dashes." Claude only saw a token, and spells `[-E-M-A-I-L-_-1-]`; the user
 sees the email everywhere else.
 
-`"lastError": "waiting for an admin to approve this Mac in Riot"`: approve it in the portal.
+`"lastError": "waiting for an admin to approve this Mac in Riot"`: approve it (`approve_agent_device`, the Hub once it has the screen).
 
 ## Measured (macOS 26 VM, not enrolled in an MDM)
 

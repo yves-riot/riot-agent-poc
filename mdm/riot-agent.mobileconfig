@@ -2,10 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   Riot agent: everything the agent needs, pre-approved, so users see no prompt.
-  Deploy this profile BEFORE Riot.pkg. Replace the __PLACEHOLDERS__ (render-profile.sh does it).
+  Replace the __PLACEHOLDERS__ (render-profile.sh does it). Parrot renders the same profile for
+  customers (priv/desktop_agent/riot-agent.mobileconfig.eex): keep the two in step.
     __TEAM_ID__            Riot's Apple Developer team id
     __APP_ID__             Riot.app's bundle id (com.tryriot.agent unless built with another APP_ID)
-    __API_URL__            e.g. https://parrot.tryriot.com/portal
+    __API_URL__            staging or development only, e.g. https://albert.staging.tryriot.com/portal;
+                           the line goes without it, and the agent uses production parrot
     __ENROLLMENT_KEY__     the workspace's agent enrollment key, rae_… (not the browser extension's
                            rbx_ secret): it only enrolls Macs, and is revoked on its own
     __EMPLOYEE_EMAIL__     the MDM's per-device email variable (Iru/Jamf: $EMAIL, Intune: {{mail}})
