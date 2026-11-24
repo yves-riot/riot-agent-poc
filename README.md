@@ -34,7 +34,7 @@ Why Rust, QuickJS and native apps: [docs/stack-choices.md](docs/stack-choices.md
 | `apple/RiotES`                       | Endpoint Security system extension                                                                                                      |
 | `apple/RiotNE`                       | network system extension: transparent proxy handing protected apps' TLS flows to the daemon                                             |
 | `apple/build-app.sh`, `build-pkg.sh` | `Riot.app` and the MDM `.pkg`                                                                                                           |
-| `mdm/`                               | configuration profile template + renderer, Iru audit script ([docs/deploy-iru.md](docs/deploy-iru.md))                                  |
+| `mdm/`                               | Iru audit script ([docs/deploy-iru.md](docs/deploy-iru.md)); the configuration profile is parrot's ([docs/parrot-agent-api.md](docs/parrot-agent-api.md#the-mdm-profile)) |
 | `dev/`                               | the stub parrot's policy (`stub-policy.json`, for `riot-stub-parrot`), dev settings, `run-dev.sh`                                       |
 
 ## Run it locally

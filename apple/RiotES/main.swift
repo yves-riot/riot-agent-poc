@@ -1,7 +1,7 @@
 import Foundation
 
 // RiotES.systemextension: activated by Riot.app (OSSystemExtensionRequest), approved and
-// granted Full Disk Access by the MDM profile (mdm/riot-agent.mobileconfig). Runs as root.
+// granted Full Disk Access by the MDM profile (parrot's, docs/parrot-agent-api.md). Runs as root.
 
 let guardian = ESGuard(daemon: DaemonLink())
 do {

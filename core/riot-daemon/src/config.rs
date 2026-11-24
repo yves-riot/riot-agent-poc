@@ -18,7 +18,7 @@ fn default_api_url() -> String {
     DEFAULT_API_URL.to_owned()
 }
 
-/// The keys an admin sets in the MDM profile (see `mdm/riot-agent.mobileconfig`).
+/// The keys of the MDM profile parrot generates (`priv/desktop_agent/riot-agent.mobileconfig.eex`).
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub struct ManagedSettings {

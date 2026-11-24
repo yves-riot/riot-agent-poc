@@ -122,8 +122,8 @@ Each one is audit-logged (`agent_enrollment_key.generate`, `.revoke`, `agent_dev
 
 What an admin deploys is the agent app from the MDM's catalog (it carries nothing specific to a
 customer, so one package serves them all, and the MDM updates it) and this profile, uploaded once.
-Parrot fills `mdm/riot-agent.mobileconfig` (its copy: `priv/desktop_agent/riot-agent.mobileconfig.eex`,
-kept in step) with:
+The profile lives in parrot only (`priv/desktop_agent/riot-agent.mobileconfig.eex`), which fills
+it with:
 
 - the Apple team that signs the agent (`DESKTOP_AGENT_APPLE_TEAM_ID`; without it the route answers
   `agent_not_distributed`) and the app's bundle id (`DESKTOP_AGENT_APP_BUNDLE_ID`, default
@@ -137,8 +137,11 @@ kept in step) with:
   default, `DEFAULT_API_URL`): the URL then moves with the app, which the MDM updates, not with
   the profile, which nobody re-uploads.
 
-The profile changes only when its key is revoked or the root is replaced. An agent version that
-needs a new payload must keep working without it until the admin uploads the new profile.
+The profile changes only when its key is revoked or the root is replaced. It names the app's
+pieces (the extensions' bundle ids, the daemon's path and signing identifier), so a change to
+them, or a new permission, is made in parrot's template with the agent release; older agents ignore
+a payload they do not use. An agent version that needs a new payload must keep working without it
+until the admin uploads the new profile.
 
 ## Tables (parrot: `Parrot.DesktopAgent`)
 
