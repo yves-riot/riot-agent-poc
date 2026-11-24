@@ -73,6 +73,16 @@ Decided on `(workspace_id, hardware_uuid)`, the workspace being the enrollment k
 | an active device with another key, seen in the last 30 days | new device, `pending_approval`: an admin approves it (the old one is then revoked) |
 | an active device with another key, silent for 30 days | new device, `active`; the old one is revoked |
 
+A new device that would be `active` is `pending_approval` instead unless `employee_email` names
+an employee of the workspace who has no other active device seen in the last 30 days. The
+enrollment key is readable by every user of every Mac (managed preferences are world-readable),
+and any active device gets an intermediate that every Mac of the organization trusts
+([the risk](network-interception.md#the-ca-in-production-decided)): without this rule a copied key
+would enroll invented Macs at will. With it, a copied key gets at most one device per employee
+who has none yet (an email of a colleague not enrolled yet), and the real Mac that finds its
+employee taken waits for an admin, who then sees the impostor. An employee's second Mac, and a
+Mac whose email the MDM did not substitute, also wait for an admin.
+
 So a leaked enrollment key cannot take over a Mac that is in use: at worst it queues a device for
 approval. A pending device gets no intermediate and every other call is refused; the agent
 enrolls again every 5 minutes and shows "waiting for an admin" meanwhile.
@@ -87,20 +97,20 @@ enrolls again every 5 minutes and shows "waiting for an admin" meanwhile.
 ## `POST /api/renew_agent_intermediate_ca`
 
 `{"ca_csr": "-----BEGIN CERTIFICATE REQUEST-----…"}` → `200 {"intermediate_pem": "…"}`, `422` on an
-invalid CSR. The agent calls it when its intermediate has less than 10 days left (every ~20 days).
+invalid CSR. The agent calls it when its intermediate has less than 3 days left (every ~4 days).
 
 The chain (`core/riot-api/src/ca.rs`):
 
 | | Key | Issued by | Content |
 |---|---|---|---|
 | organization root | KMS (`ECC_NIST_P256`, `SIGN_VERIFY`), never exported | itself | `CA:TRUE, pathlen:1`, 10 years |
-| intermediate | generated on the Mac, never leaves it | the root, `KMS.Sign` | `CA:TRUE, pathlen:0`, 30 days, `CN=Riot AI gateway <device_id>` |
+| intermediate | generated on the Mac, never leaves it | the root, `KMS.Sign` | `CA:TRUE, pathlen:0`, 7 days, `CN=Riot AI gateway <device_id>` |
 | leaf | the daemon's, in memory | the intermediate | one per AI host, 7 days |
 
 Root and intermediate carry critical name constraints (`anthropic.com`, `claude.ai`, `openai.com`,
 `chatgpt.com`): nothing they sign is valid for another site. One root per organization, created
 when the agent is enabled; the MDM profile carries its certificate. Revoking
-a device stops its renewals: its intermediate dies within 30 days (clients do not check
+a device stops its renewals: its intermediate dies within 7 days (clients do not check
 revocation for a private root, so the short life is the revocation). Keep each intermediate's
 serial, fingerprint, device and expiry (audit).
 

@@ -20,8 +20,9 @@ const REFRESH: Duration = Duration::from_secs(15 * 60);
 const UNCONFIGURED_POLL: Duration = Duration::from_secs(60);
 /// While an admin has to approve this Mac.
 const PENDING_POLL: Duration = Duration::from_secs(5 * 60);
-/// The intermediate (30 days) is renewed once less than this is left.
-const RENEW_BEFORE: time::Duration = time::Duration::days(10);
+/// The intermediate (7 days) is renewed once less than this is left: parrot can be unreachable
+/// for up to 3 days before the gateway stops decrypting.
+const RENEW_BEFORE: time::Duration = time::Duration::days(3);
 const ERROR_BACKOFF: [Duration; 4] =
     [Duration::from_secs(15), Duration::from_secs(60), Duration::from_secs(5 * 60), Duration::from_secs(15 * 60)];
 const AUTH_BACKOFF: [Duration; 3] =

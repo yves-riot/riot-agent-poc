@@ -3,13 +3,14 @@
 //!
 //! ```text
 //! organization root    parrot, key in KMS; trusted by the MDM profile   pathlen 1, 10 years
-//!   └ intermediate     one per Mac, key generated on the Mac            pathlen 0, 30 days
+//!   └ intermediate     one per Mac, key generated on the Mac            pathlen 0, 7 days
 //!       └ leaf         one per AI host, issued by the daemon            7 days
 //! ```
 //!
 //! Root and intermediate are name-constrained to [`PERMITTED_DOMAINS`]: even with their key,
-//! nothing they sign is valid for another site. The intermediate's key never leaves its Mac, so
-//! one Mac's key reads only that Mac's traffic, until its intermediate expires.
+//! nothing they sign is valid for another site. Every Mac of the organization trusts the root, so
+//! one Mac's intermediate key, copied, signs certificates every other Mac accepts: the short life
+//! of intermediates bounds it (docs/network-interception.md, "The CA in production").
 
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, DistinguishedName, DnType, GeneralSubtree, IsCa, Issuer,
@@ -20,7 +21,9 @@ use time::OffsetDateTime;
 /// The only domains (and their subdomains) the chain may issue for.
 pub const PERMITTED_DOMAINS: &[&str] = &["anthropic.com", "claude.ai", "openai.com", "chatgpt.com"];
 pub const ROOT_DAYS: i64 = 3650;
-pub const INTERMEDIATE_DAYS: i64 = 30;
+/// Short: a revoked Mac, or an intermediate copied off one, stops working within this. No
+/// client checks revocation for a private root, so the lifetime is the revocation.
+pub const INTERMEDIATE_DAYS: i64 = 7;
 
 pub fn permits(host: &str) -> bool {
     PERMITTED_DOMAINS.iter().any(|d| host == *d || host.strip_suffix(d).is_some_and(|rest| rest.ends_with('.')))

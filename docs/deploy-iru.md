@@ -25,11 +25,14 @@ extension needs Apple's entitlement.
   extension's `rbx_` secret. Staging needs `DESKTOP_AGENT_APPLE_TEAM_ID` set to the team that
   signs the test fleet's package (and `DESKTOP_AGENT_APP_BUNDLE_ID` to its `APP_ID`).
 - **The organization's root certificate**, in the profile: its key stays in parrot's KMS;
-  each Mac generates its own key and parrot signs it an intermediate CA, valid 30 days and
-  renewed by the daemon ([network-interception.md](network-interception.md#the-ca-in-production-decided)).
-  Nothing in the package or on a Mac lets anyone read another Mac's traffic.
-- **Approvals**: a Mac that comes back with a new key (reinstalled, data folder wiped) while its
-  old one is still in use waits for an admin's approval (`approve_agent_device`).
+  each Mac generates its own key and parrot signs it an intermediate CA, valid 7 days and
+  renewed by the daemon. The package holds no key; but every Mac trusts every Mac's
+  intermediate, so a copied gateway key, or a device enrolled with a copied enrollment key, can
+  intercept the AI traffic of the other Macs from their network: [the risk and what bounds it](network-interception.md#the-ca-in-production-decided).
+- **Approvals** (`approve_agent_device`): a Mac waits for one when it comes back with a new key
+  (reinstalled, data folder wiped) while its old one is still in use, when its email names no
+  employee of the workspace (`$EMAIL` not substituted, an unknown address), or when its employee
+  already has another active Mac.
 
 Older test-fleet packages shared one CA key and ran a stub of parrot next to the daemon: the new
 daemon deletes that key, and the postinstall unloads the stub. Remove the old fleet CA from the
@@ -202,7 +205,7 @@ at `http://localhost:4000/portal`, plain HTTP being allowed to loopback only.
    A Mac already enrolled in that database with another key (an earlier test, a daemon run by
    hand) waits for approval: `Parrot.DesktopAgent.Devices.approve(w.id, "<device id>")` in iex.
 
-With the server stopped, the daemon keeps decrypting with its intermediate (30 days) and retries
+With the server stopped, the daemon keeps decrypting with its intermediate (7 days) and retries
 its sync. Only this Mac reaches `localhost`: for another Mac of the fleet, expose parrot over
 HTTPS (`cloudflared tunnel --url http://localhost:4000`) and generate the profile with the
 tunnel's URL. Unassign this profile when done: it points at one laptop.

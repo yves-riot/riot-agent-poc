@@ -88,7 +88,8 @@ impl Authority {
         params.distinguished_name.push(DnType::CommonName, host);
         let now = OffsetDateTime::now_utc();
         params.not_before = now - time::Duration::hours(1);
-        params.not_after = now + time::Duration::days(LEAF_DAYS);
+        // Never past the intermediate: a client checking it would refuse the chain once it ends.
+        params.not_after = (now + time::Duration::days(LEAF_DAYS)).min(self.not_after);
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         params.use_authority_key_identifier_extension = true;
