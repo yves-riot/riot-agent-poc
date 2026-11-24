@@ -7,21 +7,34 @@ browser extension's where they exist, so one admin policy drives both products.
 ## Overview
 
 ```
- ADMIN (parrot portal)          MDM                 MAC (daemon, root)                       PARROT                 KMS
- 1. enable the agent ──────────────────────────────────────────────────────────────────────▶ org root ────────▶ CreateKey P-256
- 2. enrollment key rae_… ◀────────────────────────────────────────────────────────────────── SHA-256 kept
- 3. root certificate (public)
- 4. profile: root + ApiUrl + EnrollmentKey ─▶ push ─▶ root trusted by the system
-                                                    generates, once: device key, gateway key
-                                                    5. enroll_agent_device ───────────────▶ rae_ ok, proof ok
-                                                       rae_ + proof + JWK + CSR             signs the intermediate ─▶ Sign
-                                                    ◀── device_id, status, intermediate
-                                                    6. config, heartbeat, reports ───────▶ proof against the JWK
-                                                    7. ~4 days:  renew_agent_intermediate_ca ▶ new intermediate ─────▶ Sign
+ ADMIN (Hub)            MDM                  MAC (daemon, root)                  PARROT                           KMS
+ 1. generate_agent_mdm_profile ─────────────────────────────────────────────▶ org root, first call only ─────▶ CreateKey
+                                                                              new rae_ key, SHA-256 kept
+    ◀── profile: root + rae_ + $EMAIL + approvals ─────────────────────────────
+ 2. upload the profile ─▶ 3. push the profile,
+                             the app from the
+                             catalog ─────────▶ root trusted, approvals granted
+                                                generates, once: device key,
+                                                gateway key
+                                                4. enroll_agent_device ──────▶ rae_ ok, proof ok
+                                                   rae_ + proof + JWK + CSR    active or pending_approval
+                                                   + Mac facts + email         if active: intermediate ───────▶ Sign
+                                                ◀── device_id, status, intermediate (none while pending:
+                                                    the agent enrolls again every 5 minutes)
+ 5. approve_agent_device, pending only ─────────────────────────────────────▶ active, signs the intermediate ▶ Sign
+                                                6. config, heartbeat, reports ▶ proof checked against the JWK
+                                                7. every ~4 days:
+                                                   renew_agent_intermediate_ca ▶ new intermediate, 7 days ──▶ Sign
+ 8. revoke_agent_device ────────────────────────────────────────────────────▶ calls refused, no renewal:
+                                                                              interception stops within 7 days
 ```
 
-One call enrolls the Mac and gets its intermediate. Nothing on the Mac is a bearer credential
-for the device: a stolen `enrollment.json` or log line authenticates nothing.
+The admin does steps 1 and 2 once per workspace; the MDM then deploys every Mac, and updates
+the app from its catalog. One call enrolls the Mac and gets its intermediate. A new Mac is active
+only as the first Mac of an employee of the workspace, otherwise it waits for step 5
+([the rules](#post-apienroll_agent_device)). Nothing on the Mac is a bearer credential for the
+device: a stolen `enrollment.json` or log line authenticates nothing. The chain the gateway
+serves is in [network-interception.md](network-interception.md#the-ca-in-production-decided).
 
 ## Auth
 
