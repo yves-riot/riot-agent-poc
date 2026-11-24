@@ -17,7 +17,7 @@ browser extension's where they exist, so one admin policy drives both products.
                                                        rae_ + proof + JWK + CSR             signs the intermediate ─▶ Sign
                                                     ◀── device_id, status, intermediate
                                                     6. config, heartbeat, reports ───────▶ proof against the JWK
-                                                    7. ~20 days: renew_agent_intermediate_ca ▶ new intermediate ─────▶ Sign
+                                                    7. ~4 days:  renew_agent_intermediate_ca ▶ new intermediate ─────▶ Sign
 ```
 
 One call enrolls the Mac and gets its intermediate. Nothing on the Mac is a bearer credential
