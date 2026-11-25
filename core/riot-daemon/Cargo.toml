@@ -33,7 +33,6 @@ hostname = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
-libc = { workspace = true }
 plist = { workspace = true }
 rcgen = { workspace = true }
 reqwest = { workspace = true, features = ["stream"] }
@@ -56,3 +55,20 @@ uuid = { workspace = true }
 x509-parser = { workspace = true }
 zstd = { workspace = true }
 flate2 = { workspace = true }
+file-id = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-registry = { workspace = true }
+windows-service = { workspace = true }
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }

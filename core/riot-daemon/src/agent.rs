@@ -22,7 +22,11 @@ use crate::device::{Enrollment, Keys};
 use crate::gateway::ca::Authority;
 use crate::reports::Spool;
 
+/// The policy's `desktop_apps` entries that apply on this OS.
+#[cfg(unix)]
 const PLATFORM: &str = "macos";
+#[cfg(windows)]
+const PLATFORM: &str = "windows";
 const BYPASS_TTL: Duration = Duration::from_secs(60);
 /// One upload attempt opens the same file several times; notify the user once.
 const BLOCK_NOTIFY_DEBOUNCE: Duration = Duration::from_secs(5);
@@ -79,17 +83,20 @@ struct Redaction {
 /// Same file, same content: the ES cache and the "send anyway" grant are keyed on this.
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub struct FileIdentity {
-    dev: u64,
-    ino: u64,
+    /// Device and inode; volume and file id on Windows.
+    id: file_id::FileId,
     mtime_ns: i128,
     size: u64,
 }
 
 impl FileIdentity {
     fn of(path: &Path) -> std::io::Result<Self> {
-        use std::os::unix::fs::MetadataExt;
         let m = std::fs::metadata(path)?;
-        Ok(Self { dev: m.dev(), ino: m.ino(), mtime_ns: m.mtime() as i128 * 1_000_000_000 + m.mtime_nsec() as i128, size: m.size() })
+        let mtime_ns = match m.modified()?.duration_since(std::time::UNIX_EPOCH) {
+            Ok(after) => after.as_nanos() as i128,
+            Err(before) => -(before.duration().as_nanos() as i128),
+        };
+        Ok(Self { id: file_id::get_file_id(path)?, mtime_ns, size: m.len() })
     }
 }
 
@@ -223,7 +230,7 @@ impl Agent {
 
     // ---------- text ----------
 
-    pub async fn redact_text(&self, uid: u32, text: String, bundle_id: String) -> Result<RedactTextResult, IpcError> {
+    pub async fn redact_text(&self, user: &str, text: String, bundle_id: String) -> Result<RedactTextResult, IpcError> {
         let skipped = |allow_bypass| RedactTextResult {
             action: "skipped".into(),
             text: None,
@@ -234,7 +241,7 @@ impl Agent {
         let Some(target) = self.target(&bundle_id) else { return Ok(skipped(false)) };
 
         let engine = self.engine.clone();
-        let scope = scope(uid, &bundle_id);
+        let scope = scope(user, &bundle_id);
         let options = target.options.clone();
         let outcome = tokio::task::spawn_blocking(move || engine.redact(&text, &scope, &options)).await;
         let outcome = match outcome {
@@ -280,9 +287,9 @@ impl Agent {
         })
     }
 
-    pub async fn detokenize(&self, uid: u32, text: String, bundle_id: String) -> Result<DetokenizeResult, IpcError> {
+    pub async fn detokenize(&self, user: &str, text: String, bundle_id: String) -> Result<DetokenizeResult, IpcError> {
         let engine = self.engine.clone();
-        let scope = scope(uid, &bundle_id);
+        let scope = scope(user, &bundle_id);
         let out = tokio::task::spawn_blocking(move || engine.detokenize(&text, &scope))
             .await
             .map_err(internal)?
@@ -556,7 +563,7 @@ impl Agent {
             tokio::time::sleep(Duration::from_secs(1)).await;
             let owner = self.state.read().unwrap().pause_owner;
             if let Some(pid) = owner
-                && !process_exists(pid)
+                && !crate::os::process_exists(pid)
                 && self.state.read().unwrap().pause_owner == Some(pid)
             {
                 tracing::info!(pid, "the process the pause lasted for is gone");
@@ -585,15 +592,10 @@ impl Agent {
     }
 }
 
-fn process_exists(pid: u32) -> bool {
-    let Ok(pid) = libc::pid_t::try_from(pid) else { return false };
-    // Signal 0 checks without sending: EPERM still means the process exists.
-    (unsafe { libc::kill(pid, 0) == 0 }) || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
-}
-
-/// Token memory is per user and per app: one user's tokens never resolve in another's session.
-fn scope(uid: u32, bundle_id: &str) -> String {
-    format!("{uid}:{bundle_id}")
+/// Token memory is per user (uid, or SID on Windows) and per app: one user's tokens never
+/// resolve in another's session.
+fn scope(user: &str, bundle_id: &str) -> String {
+    format!("{user}:{bundle_id}")
 }
 
 fn push_recent(state: &mut State, event_id: String, kind: &str, app_name: &str, types: &[TypeCount]) {
@@ -638,7 +640,7 @@ fn file_key(path: &Path, identity: &FileIdentity) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Paths;
+    use crate::config::{Paths, Settings};
     use riot_detect::EngineConfig;
 
     const APP: &str = "com.apple.TextEdit";
@@ -647,7 +649,7 @@ mod tests {
     fn agent(name: &str) -> Agent {
         let dir = std::env::temp_dir().join(format!("riot-agent-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let paths = Paths { settings: dir.join("settings.json"), data_dir: dir.clone(), socket: dir.join("agent.sock") };
+        let paths = Paths { settings: Settings::File(dir.join("settings.json")), data_dir: dir.clone(), socket: dir.join("agent.sock") };
         let agent = Agent::new(paths, Engine::start(EngineConfig::default()).unwrap()).unwrap();
         let config: AgentConfig = serde_json::from_value(serde_json::json!({
             "employee": null,
@@ -659,7 +661,7 @@ mod tests {
                 "services": [{
                     "service_id": "demo",
                     "display_name": "TextEdit",
-                    "desktop_apps": [{ "platform": "macos", "bundle_id": APP, "team_id": null }]
+                    "desktop_apps": [{ "platform": PLATFORM, "bundle_id": APP, "team_id": null }]
                 }]
             }]
         }))
@@ -669,7 +671,7 @@ mod tests {
     }
 
     async fn redact(agent: &Agent) -> String {
-        let result = agent.redact_text(501, format!("Mon IBAN {IBAN}"), APP.into()).await.unwrap();
+        let result = agent.redact_text("501", format!("Mon IBAN {IBAN}"), APP.into()).await.unwrap();
         assert_eq!(result.action, "redacted");
         result.event_id.unwrap()
     }

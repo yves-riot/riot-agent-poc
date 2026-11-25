@@ -36,6 +36,12 @@
           "executable_prefixes": [
             "/Applications/ChatGPT.app/"
           ]
+        },
+        {
+          "platform": "windows",
+          "bundle_id": "chatgpt.exe",
+          "team_id": null,
+          "executable_prefixes": []
         }
       ],
       "api_hosts": [
@@ -62,6 +68,12 @@
           "executable_prefixes": [
             "/Applications/Claude.app/"
           ]
+        },
+        {
+          "platform": "windows",
+          "bundle_id": "claude.exe",
+          "team_id": null,
+          "executable_prefixes": []
         }
       ],
       "api_hosts": [

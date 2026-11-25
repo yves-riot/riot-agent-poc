@@ -11,7 +11,7 @@ riotctl <command> [args]
 
 | Env           | Default                                  | Notes                                                |
 | ------------- | ---------------------------------------- | ---------------------------------------------------- |
-| `RIOT_SOCKET` | `/var/run/com.tryriot.agent/agent.sock`  | `dev/run-dev.sh` listens on `$TMPDIR/riot-dev.sock`. |
+| `RIOT_SOCKET` | `/var/run/com.tryriot.agent/agent.sock`; Windows: `\\.\pipe\com.tryriot.agent` | `dev/run-dev.sh` listens on `$TMPDIR/riot-dev.sock`, `dev\run-dev.ps1` on `\\.\pipe\riot-dev`. |
 
 Exit codes: `0` success, `1` cannot connect or the daemon returned an error
 (`badRequest`, `forbidden`, `unavailable`, `internal`, printed on stderr), `2` bad usage.

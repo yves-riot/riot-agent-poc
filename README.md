@@ -35,7 +35,7 @@ Why Rust, QuickJS and native apps: [docs/stack-choices.md](docs/stack-choices.md
 | `apple/RiotNE`                       | network system extension: transparent proxy handing protected apps' TLS flows to the daemon                                             |
 | `apple/build-app.sh`, `build-pkg.sh` | `Riot.app` and the MDM `.pkg`                                                                                                           |
 | `mdm/`                               | Iru audit script ([docs/deploy-iru.md](docs/deploy-iru.md)); the configuration profile is parrot's ([docs/parrot-agent-api.md](docs/parrot-agent-api.md#the-mdm-profile)) |
-| `dev/`                               | the stub parrot's policy (`stub-policy.json`, for `riot-stub-parrot`), dev settings, `run-dev.sh`                                       |
+| `dev/`                               | the stub parrot's policy (`stub-policy.json`, for `riot-stub-parrot`), dev settings, `run-dev.sh` (`run-dev.ps1` on Windows)          |
 
 ## Run it locally
 
@@ -64,6 +64,33 @@ folder, CA, stub on 8787).
 `RIOT_SOCKET=$TMPDIR/riot-dev.sock core/target/release/riotctl status|popup|watch|…`
 talks to the daemon directly; `scan` works unprivileged because `run-dev.sh` sets
 `RIOT_DEV_ALLOW_SCAN=1`. Every command: [docs/riotctl.md](docs/riotctl.md).
+
+### On Windows (daemon only, so far)
+
+Needs Rust (MSVC), Node + pnpm and the same extension checkout. No tray app yet:
+
+```powershell
+cd js; pnpm install; node build.mjs; cd ..
+dev\run-dev.ps1     # builds the core, then runs the stub parrot and the daemon (unprivileged)
+$env:RIOT_SOCKET='\\.\pipe\riot-dev'; core\target\release\riotctl.exe status
+```
+
+What differs from macOS is in `core/riot-daemon/src/os/`; the rest of the daemon is shared.
+
+| macOS                                              | Windows                                                                                          |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| LaunchDaemon (root)                                | `RiotAgent` service, LocalSystem (`riot-daemon.exe --service`, logs in `%ProgramData%\Riot\logs`) |
+| Unix socket, peer uid                              | Named pipe `\\.\pipe\com.tryriot.agent`, peer SID; users may connect, not serve the pipe         |
+| root-only requests (`scanFile`, `pause`)           | LocalSystem or an elevated administrator                                                         |
+| Managed preferences plist                          | Registry `HKLM\SOFTWARE\Policies\Riot\Agent` (`ApiUrl`, `EnrollmentKey`, `EmployeeEmail`)        |
+| `/Library/Application Support/com.tryriot.agent`   | `%ProgramData%\Riot`, its own DACL (SYSTEM, Administrators); refused if another user owns it     |
+| `0600` key files                                   | DACL: SYSTEM and the daemon's user only                                                          |
+| `IOPlatformUUID`, serial                           | SMBIOS system UUID and serial (same values as `Win32_ComputerSystemProduct`)                     |
+| `desktop_apps` with `platform: macos`              | `platform: windows`; `bundle_id` is provisionally the executable's name (`claude.exe`)           |
+
+Registering the service by hand (an elevated shell, until the installer exists):
+`sc.exe create RiotAgent binPath= "<path>\riot-daemon.exe --service" start= auto`, then
+`sc.exe start RiotAgent`.
 
 ## Tests
 
@@ -237,8 +264,11 @@ redacts Claude Code's API requests (`ANTHROPIC_BASE_URL=http://127.0.0.1:7591/an
   shows the state (`NSPasteboard.accessBehavior`) and links to Settings.
 - **Product:** authorized services (account detection has no desktop equivalent), and whether to
   guard browsers too (today: the extension does).
-- **Windows** (phase 2): the daemon becomes a service on a named pipe; UI in WinUI 3 / WPF on the
-  same protocol; minifilter for files.
+- **Windows** (phase 2): the daemon runs there as a service on a named pipe (above). Still to do:
+  tray app and clipboard guard in C# on the same protocol, how a protected app is identified
+  (executable, package, signer: `is_installed` answers `false` until then), minifilter for files,
+  the network hand-over (WFP), an MSI. The service mode is built but not yet run under the service
+  manager. Not there yet either: a peer check of the client's signature, and keys in the TPM.
 
 ## Deviations from the plan
 

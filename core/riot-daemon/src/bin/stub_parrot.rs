@@ -20,6 +20,8 @@
 //!
 //! Env: `STUB_MONITORING=0` (policy disabled), `STUB_NO_EMPLOYEE=1`, `STUB_NO_BYPASS=1`.
 
+#![forbid(unsafe_code)]
+
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -364,11 +366,15 @@ fn root(dir: Option<&Path>) -> anyhow::Result<Issuer<'static, KeyPair>> {
     };
     let (cert_path, key_path) = (dir.join("stub-root.pem"), dir.join("stub-root-key.pem"));
     if !(cert_path.exists() && key_path.exists()) {
-        use std::os::unix::fs::OpenOptionsExt;
         std::fs::create_dir_all(dir)?;
         let key = KeyPair::generate()?;
         let cert = riot_api::ca::root_params("Riot AI gateway (development root)").self_signed(&key)?;
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&key_path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        // On Windows, the development folder (under %TEMP%) is the user's own.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut f = options.open(&key_path)?;
         std::io::Write::write_all(&mut f, key.serialize_pem().as_bytes())?;
         std::fs::write(&cert_path, cert.pem())?;
     }

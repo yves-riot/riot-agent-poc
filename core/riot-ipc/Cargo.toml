@@ -1,6 +1,6 @@
 [package]
 name = "riot-ipc"
-description = "Local protocol between the Riot daemon and its clients (menu bar app, ES extension, CLI): newline-delimited JSON over a Unix socket"
+description = "Local protocol between the Riot daemon and its clients (menu bar app, ES extension, CLI): newline-delimited JSON over a Unix socket or a named pipe"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

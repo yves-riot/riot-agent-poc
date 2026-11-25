@@ -49,7 +49,9 @@ use riot_detect::{Detection, Engine, Options};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UnixListener};
+#[cfg(unix)]
+use tokio::net::UnixListener;
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::agent::{Agent, Target};
 use recording::Recording;
@@ -88,7 +90,9 @@ pub struct Gateway {
 enum Entry {
     /// The loopback TCP port: base URL, and CONNECT for development.
     Tcp,
-    /// `flows.sock`: the network extension's flows, as CONNECTs.
+    /// `flows.sock`: the network extension's flows, as CONNECTs (macOS; Windows has no such
+    /// hand-over yet).
+    #[cfg_attr(not(unix), allow(dead_code))]
     Flows,
 }
 
@@ -96,24 +100,24 @@ pub async fn serve(agent: Arc<Agent>, addr: SocketAddr) -> anyhow::Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let upstreams = Upstreams::from_env()?;
     let tcp_connect = std::env::var_os("RIOT_DEV_PROXY").is_some_and(|v| v == "1");
-    let flows_path = agent.paths.socket.with_file_name("flows.sock");
-    let flows = match bind_flows(&flows_path) {
-        Ok(listener) => Some(listener),
-        Err(e) => {
-            tracing::warn!(path = %flows_path.display(), error = %e, "no flow socket: the network extension cannot hand flows over");
-            None
+    #[cfg(unix)]
+    let (flows, flows_at) = {
+        let flows_path = agent.paths.socket.with_file_name("flows.sock");
+        match bind_flows(&flows_path) {
+            Ok(listener) => (Some(listener), Some(flows_path.display().to_string())),
+            Err(e) => {
+                tracing::warn!(path = %flows_path.display(), error = %e, "no flow socket: the network extension cannot hand flows over");
+                (None, None)
+            }
         }
     };
-    tracing::info!(
-        %addr,
-        upstream = %upstreams,
-        flows = flows.is_some().then(|| flows_path.display().to_string()),
-        tcp_connect,
-        "gateway listening"
-    );
+    #[cfg(not(unix))]
+    let flows_at: Option<String> = None;
+    tracing::info!(%addr, upstream = %upstreams, flows = flows_at, tcp_connect, "gateway listening");
     #[cfg(feature = "debug-redaction")]
     debug_redaction::warn_enabled();
     let gateway = Gateway::new(agent, upstreams, tcp_connect)?;
+    #[cfg(unix)]
     if let Some(flows) = flows {
         tokio::spawn(gateway.clone().run_flows(flows));
     }
@@ -122,6 +126,7 @@ pub async fn serve(agent: Arc<Agent>, addr: SocketAddr) -> anyhow::Result<()> {
 
 /// Only root (the network extension) and the daemon's own user may hand flows over: the socket
 /// is `0600`, and each peer's uid is checked.
+#[cfg(unix)]
 fn bind_flows(path: &std::path::Path) -> anyhow::Result<UnixListener> {
     use std::os::unix::fs::PermissionsExt;
     // The gateway may start before the server has made the sockets' folder.
@@ -134,10 +139,10 @@ fn bind_flows(path: &std::path::Path) -> anyhow::Result<UnixListener> {
     Ok(listener)
 }
 
+#[cfg(unix)]
 fn peer_allowed(stream: &tokio::net::UnixStream) -> bool {
     let uid = stream.peer_cred().map(|c| c.uid());
-    // SAFETY: geteuid has no preconditions.
-    uid.is_ok_and(|uid| uid == 0 || uid == unsafe { libc::geteuid() })
+    uid.is_ok_and(|uid| uid == 0 || uid == crate::os::current_uid())
 }
 
 /// Where requests for an API host go instead of `https://<host>`: a local server in tests, or
@@ -218,6 +223,7 @@ impl Gateway {
         }
     }
 
+    #[cfg(unix)]
     async fn run_flows(self: Arc<Self>, listener: UnixListener) {
         loop {
             let stream = match listener.accept().await {
@@ -889,7 +895,7 @@ impl GatewayError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Paths;
+    use crate::config::{Paths, Settings};
     use riot_detect::EngineConfig;
     use serde_json::json;
 
@@ -899,7 +905,7 @@ mod tests {
     fn agent(name: &str, api_hosts: &[&str]) -> Arc<Agent> {
         let dir = std::env::temp_dir().join(format!("riot-gateway-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let paths = Paths { settings: dir.join("settings.json"), data_dir: dir.clone(), socket: dir.join("agent.sock") };
+        let paths = Paths { settings: Settings::File(dir.join("settings.json")), data_dir: dir.clone(), socket: dir.join("agent.sock") };
         let agent = Agent::new(paths, Engine::start(EngineConfig::default()).unwrap()).unwrap();
         agent.state.write().unwrap().config = Some(
             serde_json::from_value(json!({
@@ -934,7 +940,14 @@ mod tests {
     #[tokio::test]
     async fn a_pause_ends_with_the_process_it_lasts_for() {
         let agent = agent("paused-for", &["api.anthropic.com"]);
+        #[cfg(unix)]
         let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "31", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
         agent.pause(Some(child.id()));
         tokio::spawn(agent.clone().watch_pause());
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
@@ -1147,6 +1160,7 @@ mod tests {
         assert!(tls_to(stream, root, "example.com").await.is_err());
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn a_flow_to_an_address_is_routed_by_its_server_name() {
         let agent = agent("flows", &["api.anthropic.com"]);
@@ -1191,6 +1205,7 @@ mod tests {
         assert!(seen.lock().unwrap().is_empty(), "nothing went upstream");
     }
 
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn the_flow_socket_takes_only_connect() {
         let agent = agent("flows-only", &[]);

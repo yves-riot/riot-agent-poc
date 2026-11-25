@@ -1,4 +1,5 @@
-//! The daemon's local protocol: one JSON object per line over a Unix socket.
+//! The daemon's local protocol: one JSON object per line over a Unix socket (macOS) or a named
+//! pipe (Windows).
 //!
 //! ```text
 //! → {"id":1,"method":"redactText","params":{"text":"…","bundleId":"com.openai.codex"}}
@@ -12,13 +13,18 @@
 //! by design: the menu bar app and the ES extension hold no detection or policy logic.
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream as Stream;
 use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(unix)]
 pub const DEFAULT_SOCKET: &str = "/var/run/com.tryriot.agent/agent.sock";
+/// A named pipe: any signed-in user may open it, only the daemon's user may serve it.
+#[cfg(windows)]
+pub const DEFAULT_SOCKET: &str = r"\\.\pipe\com.tryriot.agent";
 
 // ---------- requests ----------
 
@@ -248,16 +254,38 @@ pub enum Event {
 
 // ---------- blocking client (CLI, tests; the Swift app has its own) ----------
 
+#[cfg(windows)]
+type Stream = std::fs::File;
+
 pub struct Client {
-    reader: BufReader<UnixStream>,
-    writer: UnixStream,
+    reader: BufReader<Stream>,
+    writer: Stream,
     next_id: u64,
 }
 
 impl Client {
+    #[cfg(unix)]
     pub fn connect(path: &Path) -> std::io::Result<Self> {
-        let stream = UnixStream::connect(path)?;
+        let stream = Stream::connect(path)?;
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+        Ok(Self { reader: BufReader::new(stream.try_clone()?), writer: stream, next_id: 1 })
+    }
+
+    /// Opens the pipe as a file. Between the daemon accepting a client and creating the next
+    /// instance, every instance is taken for an instant: that is retried. A synchronous pipe has
+    /// no read timeout, so a call waits for the daemon's reply.
+    #[cfg(windows)]
+    pub fn connect(path: &Path) -> std::io::Result<Self> {
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let started = std::time::Instant::now();
+        let stream = loop {
+            match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) && started.elapsed() < Duration::from_secs(5) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                other => break other?,
+            }
+        };
         Ok(Self { reader: BufReader::new(stream.try_clone()?), writer: stream, next_id: 1 })
     }
 

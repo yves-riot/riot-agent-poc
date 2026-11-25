@@ -80,7 +80,7 @@ async fn sync_once(agent: &Agent, facts: &DeviceFacts) -> Result<Synced, ApiErro
     let settings = match load_settings(&agent.paths.settings) {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!(error = %e, path = %agent.paths.settings.display(), "unreadable managed settings");
+            tracing::error!(error = %e, source = %agent.paths.settings, "unreadable managed settings");
             None
         }
     };

@@ -13,6 +13,8 @@
 //!
 //! Every command and its output: docs/riotctl.md.
 
+#![forbid(unsafe_code)]
+
 use std::path::PathBuf;
 
 use riot_ipc::{Client, Request};
