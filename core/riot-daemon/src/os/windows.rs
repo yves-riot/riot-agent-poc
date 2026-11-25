@@ -4,8 +4,8 @@
 //! LocalSystem plays root's part: the service runs as it, and what is "root only" on macOS is
 //! LocalSystem or an elevated administrator here.
 //!
-//! The daemon's only `unsafe` code on Windows is here (`#![deny(unsafe_code)]` elsewhere): the
-//! Win32 calls that no maintained crate wraps safely. The registry goes through
+//! The daemon's only `unsafe` code is here (`#![deny(unsafe_code)]` elsewhere): the Win32 calls
+//! that no maintained crate wraps safely. The registry goes through
 //! `windows-registry` and file identity through `file-id`, which are safe to call.
 
 #![allow(unsafe_code)]

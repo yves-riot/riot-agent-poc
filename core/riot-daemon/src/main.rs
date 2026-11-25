@@ -8,7 +8,8 @@
 //!
 //! On Windows, `dev/run-dev.ps1` sets the same variables (`RIOT_SOCKET=\\.\pipe\riot-dev`).
 
-// The OS calls std does not wrap are in `os`, which allows unsafe code; nothing else may.
+// The Win32 calls no safe crate wraps are in `os/windows.rs`, which allows unsafe code; nothing
+// else may (macOS needs none).
 #![deny(unsafe_code)]
 
 mod agent;
