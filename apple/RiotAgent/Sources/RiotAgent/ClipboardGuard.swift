@@ -205,7 +205,7 @@ final class ClipboardGuard {
         guard count != lastSeen else { return false }
         lastSeen = count
         guard isTargetFrontmost else { return false }
-        if swap?.changeCount == count || pasteboard.hasType(Self.marker) { return false }
+        if pasteboard.hasType(Self.marker) { return false }
         if var swap, pasteboard.plainText() == swap.redacted {
             // A clipboard sync writing our text back: still ours, with the original to restore.
             log.debug("echo of the redacted text adopted")
@@ -316,11 +316,11 @@ final class ClipboardGuard {
     /// Re-arms once the reading app has its data, if our promise is still the clipboard.
     /// A paste within the delay gets the cached redacted text, without a HUD of its own.
     private func scheduleRearm(of changeCount: Int) {
-        pendingRearm?.cancel()
         let delay = rearmDelay
         pendingRearm = Task { @MainActor [weak self] in
             if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
-            guard !Task.isCancelled, let self, let swap = self.swap, swap.changeCount == changeCount,
+            // A promise put back or replaced meanwhile has another change count: nothing to cancel.
+            guard let self, let swap = self.swap, swap.changeCount == changeCount,
                   self.pasteboard.changeCount == changeCount, self.frontmost == swap.bundleId else { return }
             self.arm()
         }
@@ -371,7 +371,6 @@ final class ClipboardGuard {
     func pasteOriginal() -> OriginalOutcome {
         guard let swap, swap.result.allowBypass, pasteboard.changeCount == swap.changeCount else { return .unavailable }
         self.swap = nil
-        pendingRearm?.cancel()
         pasteboard.restore(swap.original, marker: Self.marker) // marked: not re-inspected
         lastSeen = pasteboard.changeCount
         if let lastPaste = swap.lastPaste {

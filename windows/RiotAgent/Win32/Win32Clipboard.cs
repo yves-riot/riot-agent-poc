@@ -86,18 +86,7 @@ internal sealed class Win32Clipboard : IClipboard, IDisposable
         Log?.Invoke($"rendered (seq {before} -> {after})");
     }
 
-    public string? PlainText()
-    {
-        if (!IsClipboardFormatAvailable(CF_UNICODETEXT) || !Open()) return null;
-        try
-        {
-            return Read(CF_UNICODETEXT) is { } data ? DecodeUnicode(data) : null;
-        }
-        finally
-        {
-            CloseClipboard();
-        }
-    }
+    public string? PlainText() => Texts([ClipboardFormats.PlainText]).GetValueOrDefault(ClipboardFormats.PlainText);
 
     public bool HasFormat(string format) => IsClipboardFormatAvailable(Id(format));
 

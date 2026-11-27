@@ -144,7 +144,6 @@ public sealed class ClipboardGuard
     /// <summary>Re-arming empties the clipboard. Done at once, it can land while the reading app
     /// is still receiving the data, and that paste then gets nothing.</summary>
     private Task pendingRearm = Task.CompletedTask;
-    private CancellationTokenSource? rearmCancel;
 
     public ClipboardGuard(IClipboard clipboard, IGuardBackend backend, IKeyboardState keyboard, IKeystrokes keys,
         Func<DateTimeOffset>? now = null, TimeSpan? rearmDelay = null)
@@ -208,7 +207,7 @@ public sealed class ClipboardGuard
         if (count == lastSeen) return false;
         lastSeen = count;
         if (!IsTargetForeground) return false;
-        if (Current?.ChangeCount == count || clipboard.HasFormat(Marker)) return false;
+        if (clipboard.HasFormat(Marker)) return false;
         if (Current is { } swap && clipboard.PlainText() == swap.Redacted)
         {
             // A clipboard sync writing our text back: still ours, with the original to restore.
@@ -359,22 +358,14 @@ public sealed class ClipboardGuard
     /// clipboard. A paste within the delay gets the kept text, without a HUD of its own.</summary>
     private void ScheduleRearm(long changeCount)
     {
-        rearmCancel?.Cancel();
-        var cancel = rearmCancel = new CancellationTokenSource();
         pendingRearm = Rearm();
 
         async Task Rearm()
         {
-            try
-            {
-                if (rearmDelay > TimeSpan.Zero) await Task.Delay(rearmDelay, cancel.Token);
-                else await Task.Yield();
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-            if (cancel.IsCancellationRequested || Current is not { } swap || swap.ChangeCount != changeCount
+            if (rearmDelay > TimeSpan.Zero) await Task.Delay(rearmDelay);
+            else await Task.Yield();
+            // A promise put back or replaced meanwhile has another change count: nothing to cancel.
+            if (Current is not { } swap || swap.ChangeCount != changeCount
                 || clipboard.ChangeCount != changeCount || !Same(Foreground, swap.AppId)) return;
             Arm();
         }
@@ -447,7 +438,6 @@ public sealed class ClipboardGuard
         if (Current is not { } swap || !swap.Result.AllowBypass || clipboard.ChangeCount != swap.ChangeCount)
             return OriginalOutcome.Unavailable;
         Current = null;
-        rearmCancel?.Cancel();
         clipboard.Restore(swap.Original, Marker); // marked: not inspected again
         lastSeen = clipboard.ChangeCount;
         if (swap.LastPaste is { } lastPaste) _ = Override(lastPaste);
