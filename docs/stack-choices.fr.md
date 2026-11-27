@@ -3,8 +3,8 @@
 _English version: [stack-choices.md](stack-choices.md)._
 
 Pourquoi l'agent est un daemon Rust, avec le moteur TypeScript de l'extension sur un QuickJS
-embarqué (en attendant un moteur Rust), et des apps natives par OS (Swift sur macOS, C# plus tard
-sur Windows).
+embarqué (en attendant un moteur Rust), et des apps natives par OS (Swift sur macOS, C# et WPF sur
+Windows).
 
 ## Contraintes
 
@@ -110,8 +110,46 @@ L'UI reste native, même si elle s'enrichit. Les apps par OS :
 
 - **macOS : Swift** (SwiftUI et AppKit). L'extension Endpoint Security doit de toute façon être
   une system extension. Mesuré : app 21 Mo, `Riot.app` 9,8 Mo.
-- **Windows (phase 2) : C#**, avec WinUI 3 ou WPF pour l'UI et un minifilter pour les fichiers,
-  sur le même daemon et le même protocole.
+- **Windows : C#**, avec WPF pour l'UI ([ci-dessous](#windows--wpf)) et un minifilter pour les
+  fichiers, sur le même daemon et le même protocole.
+
+### Windows : WPF
+
+Trois boîtes à outils natives pouvaient porter l'icône de notification, le popup et le HUD :
+
+|          | Déployé avec                                                                                  | Apparence Windows 11                                    | Un HUD qui ne prend jamais le focus  | Mémoire, au repos                                      |
+| -------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------ |
+| **WPF**  | le .NET Desktop Runtime seul                                                                  | thème Fluent intégré depuis .NET 9, clair et sombre     | `WS_EX_NOACTIVATE` sur sa fenêtre    | mesuré : 93 Mo de working set, 44 Mo privés            |
+| WinUI 3  | le runtime .NET et le runtime Windows App SDK, sur chaque PC, à la même version que l'app     | native                                                  | pas de support direct : interop Win32 | pas mesuré ; le même runtime .NET, plus WinUI          |
+| WinForms | le .NET Desktop Runtime seul                                                                  | contrôles datés : les cartes seraient dessinées à la main | `WS_EX_NOACTIVATE`                 | pas mesuré ; a priori moins que WPF                    |
+
+Pourquoi WPF :
+
+- **Un seul runtime à déployer.** Le MDM installe l'app et .NET (ou l'app l'embarque). WinUI 3
+  ajoute le runtime Windows App SDK, dont la version doit correspondre à celle de l'app sur chaque
+  PC du parc.
+- **Le comportement d'OS du garde, c'est du Win32, et WPF y donne un accès direct.** Une fenêtre
+  invisible (`HwndSource`) reçoit les notifications du presse-papier, les demandes de rendu
+  différé, la frappe clavier brute et les clics sur l'icône de notification ; le HUD est une
+  fenêtre `WS_EX_NOACTIVATE`, donc l'app IA garde le focus et reçoit les Ctrl+Z/Ctrl+V.
+- **Il ressemble à Windows 11**, clair ou sombre selon le réglage de Windows, avec le thème
+  Fluent, et il affiche les cartes avec les textes de l'extension.
+- **Mûr et stable** : maintenu dans .NET, connu de la plupart des développeurs C#. Les cartes sont
+  en XAML, comme un développeur WPF s'y attend, avec le concepteur de Visual Studio et le Hot
+  Reload ; le C# ne fait que choisir ce qu'une carte affiche.
+
+Ce que ça coûte :
+
+- **Mémoire : 93 Mo de working set, 44 Mo privés, au repos**, contre 21 Mo pour l'app macOS (build
+  Release, mesuré sous Windows 11). L'essentiel vient du runtime .NET et de WPF lui-même (rendu
+  DirectX, thème), partagés avec les autres apps .NET quand il y en a ; l'état propre de l'agent
+  est petit. Désactiver le GC en arrière-plan a économisé 8 Mo de mémoire privée.
+- **Ni trimming ni Native AOT** avec WPF : le runtime .NET vient avec l'app.
+- **Le réglage du thème Fluent (`ThemeMode`) est encore marqué expérimental** dans .NET 10.
+
+À revoir si la mémoire devient bloquante (WinForms, ou une UI Win32 compilée en Native AOT : le
+code presse-papier et Win32 reste, les cartes sont redessinées), ou si l'app gagne des écrans
+assez riches pour justifier WinUI 3 et son runtime.
 
 ### Natif plutôt que web
 

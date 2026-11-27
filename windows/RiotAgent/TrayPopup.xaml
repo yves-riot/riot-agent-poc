@@ -1,0 +1,106 @@
+<!-- The popup of the notification icon (TrayPopupView): who and what Riot is, the state, what it
+     protects and what it did lately. -->
+<Window x:Class="Riot.Agent.App.TrayPopup"
+        x:ClassModifier="internal"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:Riot.Agent.App"
+        mc:Ignorable="d"
+        d:DataContext="{d:DesignInstance Type=local:TrayPopupView}"
+        Title="Riot"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        Topmost="True"
+        ShowInTaskbar="False"
+        Width="360"
+        SizeToContent="Height"
+        Background="{DynamicResource SolidBackgroundFillColorBaseBrush}">
+  <Window.Resources>
+    <DataTemplate DataType="{x:Type local:InfoView}">
+      <StackPanel>
+        <TextBlock Text="{Binding Title}" Style="{StaticResource StrongText}" />
+        <TextBlock Text="{Binding Body}" Style="{StaticResource SmallText}" Margin="0,2,0,0" />
+      </StackPanel>
+    </DataTemplate>
+  </Window.Resources>
+
+  <Border Padding="24" BorderThickness="1" BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}">
+    <StackPanel>
+      <ContentControl Content="{Binding Header}" Focusable="False" />
+
+      <!-- The state: signed in, standby, not configured, no daemon... -->
+      <Border Style="{StaticResource Box}" Background="{StaticResource NeutralTint}" Margin="0,16,0,0"
+              Visibility="{Binding Status, Converter={StaticResource VisibleWhenSet}}">
+        <DockPanel>
+          <Ellipse DockPanel.Dock="Left" Width="8" Height="8" Margin="0,6,10,0" VerticalAlignment="Top" Fill="{Binding Status.Dot}" />
+          <StackPanel>
+            <TextBlock Text="{Binding Status.Title}" Style="{StaticResource StrongText}" />
+            <TextBlock Text="{Binding Status.Body}" Style="{StaticResource SecondaryText}" Margin="0,2,0,0"
+                       Visibility="{Binding Status.Body, Converter={StaticResource VisibleWhenSet}}" />
+          </StackPanel>
+        </DockPanel>
+      </Border>
+      <TextBlock Text="{Binding Loading}" Style="{StaticResource SecondaryText}" Margin="0,16,0,0"
+                 Visibility="{Binding Loading, Converter={StaticResource VisibleWhenSet}}" />
+
+      <ContentControl Content="{Binding Redactions}" Focusable="False" Margin="0,16,0,0"
+                      Visibility="{Binding Redactions, Converter={StaticResource VisibleWhenSet}}" />
+      <ContentControl Content="{Binding Privacy}" Focusable="False" Margin="0,16,0,0" />
+
+      <StackPanel Margin="0,16,0,0" Visibility="{Binding ProtectedApps, Converter={StaticResource VisibleWhenSet}}">
+        <TextBlock Text="{Binding ProtectedAppsTitle}" Style="{StaticResource SectionText}" />
+        <ItemsControl ItemsSource="{Binding ProtectedApps}" Focusable="False">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate DataType="{x:Type local:AppRow}">
+              <DockPanel Margin="0,6,0,0">
+                <TextBlock DockPanel.Dock="Left" Margin="0,0,8,0">
+                  <TextBlock.Style>
+                    <Style TargetType="TextBlock" BasedOn="{StaticResource BodyText}">
+                      <Setter Property="Text" Value="✓" />
+                      <Style.Triggers>
+                        <DataTrigger Binding="{Binding Installed}" Value="False">
+                          <Setter Property="Text" Value="○" />
+                          <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+                        </DataTrigger>
+                      </Style.Triggers>
+                    </Style>
+                  </TextBlock.Style>
+                </TextBlock>
+                <TextBlock Text="{Binding Name}" Style="{StaticResource BodyText}" />
+              </DockPanel>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+
+      <!-- One line each: what happened and where on the left, the types on the right, cut short. -->
+      <StackPanel Margin="0,16,0,0" Visibility="{Binding Recent, Converter={StaticResource VisibleWhenSet}}">
+        <TextBlock Text="{Binding RecentTitle}" Style="{StaticResource SectionText}" />
+        <ItemsControl ItemsSource="{Binding Recent}" Focusable="False">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate DataType="{x:Type local:RecentRow}">
+              <DockPanel Margin="0,6,0,0">
+                <TextBlock DockPanel.Dock="Right" Text="{Binding Types}" Style="{StaticResource SmallText}" Margin="8,0,0,0"
+                           MaxWidth="130" VerticalAlignment="Center" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+                <TextBlock Style="{StaticResource BodyText}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis">
+                  <Run Text="{Binding What, Mode=OneWay}" /><Run Text="{Binding App, Mode=OneWay, StringFormat=' · {0}'}"
+                       Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                </TextBlock>
+              </DockPanel>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+
+      <Separator Margin="0,16,0,0" />
+      <CheckBox Margin="0,16,0,0" VerticalContentAlignment="Center" IsChecked="{Binding FullPopup, Mode=OneWay}" Click="FullPopup_Click">
+        <TextBlock Text="{Binding FullPopupLabel}" Style="{StaticResource BodyText}" />
+      </CheckBox>
+      <TextBlock Margin="0,16,0,0" HorizontalAlignment="Right" Style="{StaticResource LinkText}">
+        <Hyperlink Click="Quit_Click"><Run Text="{Binding QuitLabel, Mode=OneWay}" /></Hyperlink>
+      </TextBlock>
+    </StackPanel>
+  </Border>
+</Window>

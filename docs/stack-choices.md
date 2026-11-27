@@ -3,7 +3,7 @@
 _Version française : [stack-choices.fr.md](stack-choices.fr.md)._
 
 Why the agent is a Rust daemon, the extension's TypeScript engine on embedded QuickJS (until a
-Rust engine replaces it), and native apps per OS (Swift on macOS, C# on Windows later).
+Rust engine replaces it), and native apps per OS (Swift on macOS, C# and WPF on Windows).
 
 ## Constraints
 
@@ -99,8 +99,45 @@ The UI stays native even as it gets richer. The per-OS apps:
 
 - **macOS: Swift** (SwiftUI and AppKit). The Endpoint Security extension has to be a system
   extension anyway. Measured: app 21 MB, `Riot.app` 9.8 MB.
-- **Windows (phase 2): C#** with WinUI 3 or WPF for the UI and a minifilter for files, on the
+- **Windows: C#** with WPF for the UI ([below](#windows-wpf)) and a minifilter for files, on the
   same daemon and protocol.
+
+### Windows: WPF
+
+Three native toolkits could carry the notification icon, the popup and the HUD:
+
+|          | Deployed with                                                                        | Windows 11 look                                     | A HUD that never takes the focus     | Memory, idle                                         |
+| -------- | ------------------------------------------------------------------------------------ | --------------------------------------------------- | ------------------------------------ | ---------------------------------------------------- |
+| **WPF**  | the .NET Desktop Runtime only                                                        | Fluent theme built in since .NET 9, light and dark  | `WS_EX_NOACTIVATE` on its window     | measured: 93 MB working set, 44 MB private           |
+| WinUI 3  | the .NET runtime and the Windows App SDK runtime, on every PC, kept in step with it  | native                                              | no direct support: Win32 interop     | not measured; the same .NET runtime plus WinUI       |
+| WinForms | the .NET Desktop Runtime only                                                        | dated controls: the cards would be drawn by hand    | `WS_EX_NOACTIVATE`                   | not measured; expected lower than WPF                |
+
+Why WPF:
+
+- **One runtime to deploy.** The MDM installs the app and .NET (or the app bundles it). WinUI 3
+  adds the Windows App SDK runtime, whose version has to match the app's on every PC of a fleet.
+- **The guard's OS behaviour is plain Win32, and WPF gives direct access to it.** One hidden
+  window (`HwndSource`) receives the clipboard notifications, the delayed-render requests, the
+  raw keyboard events and the notification icon's clicks; the HUD is a window with
+  `WS_EX_NOACTIVATE`, so the AI app keeps the focus and gets the Ctrl+Z/Ctrl+V.
+- **It looks like Windows 11**, light or dark as Windows is set, with the Fluent theme, and it
+  renders the cards with the extension's own strings.
+- **Mature and stable**: maintained in .NET, known to most C# developers. The cards are XAML,
+  as a WPF developer expects them, with the Visual Studio designer and Hot Reload; the C# only
+  picks what a card shows.
+
+What it costs:
+
+- **Memory: 93 MB working set, 44 MB private, idle**, against 21 MB for the macOS app (Release
+  build, measured on Windows 11). Most of it is the .NET runtime and WPF itself (DirectX
+  rendering, the theme), shared with other .NET apps where there are; the agent's own state is
+  small. Turning off the background GC saved 8 MB of private memory.
+- **No trimming and no Native AOT** with WPF: the .NET runtime comes with the app.
+- **The Fluent theme switch (`ThemeMode`) is still marked experimental** in .NET 10.
+
+Revisit if memory becomes a blocker (WinForms, or a Win32 UI compiled with Native AOT: the
+clipboard and Win32 code stays, the cards are redrawn), or if the app grows screens rich enough
+to justify WinUI 3 and its runtime.
 
 ### Native over web
 

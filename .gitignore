@@ -5,3 +5,6 @@ target/
 *.xcodeproj/xcuserdata/
 apple/build/
 .build/
+bin/
+obj/
+.vs/

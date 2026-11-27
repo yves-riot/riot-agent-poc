@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="RiotAgent.Core/RiotAgent.Core.csproj" />
+  <Project Path="RiotAgent.Tests/RiotAgent.Tests.csproj" />
+  <Project Path="RiotAgent/RiotAgent.csproj" />
+</Solution>

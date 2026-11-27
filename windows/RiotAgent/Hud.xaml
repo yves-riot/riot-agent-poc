@@ -1,0 +1,57 @@
+<!-- One card at a time (HudCardView): a header, then what applies to the card, then the buttons.
+     346 px wide plus room for the shadow. -->
+<Window x:Class="Riot.Agent.App.Hud"
+        x:ClassModifier="internal"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:Riot.Agent.App"
+        mc:Ignorable="d"
+        d:DataContext="{d:DesignInstance Type=local:HudCardView}"
+        Title="Riot"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="NoResize"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Width="378"
+        SizeToContent="Height">
+  <Border Margin="16" Padding="20" CornerRadius="16" BorderThickness="1"
+          Background="{DynamicResource SolidBackgroundFillColorBaseBrush}"
+          BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}">
+    <Border.Effect>
+      <DropShadowEffect BlurRadius="16" ShadowDepth="3" Opacity="0.22" />
+    </Border.Effect>
+    <StackPanel>
+      <ContentControl Content="{Binding Header}" Focusable="False" />
+      <TextBlock Text="{Binding Intro}" Style="{StaticResource SecondaryText}" Margin="0,14,0,0"
+                 Visibility="{Binding Intro, Converter={StaticResource VisibleWhenSet}}" />
+      <ContentControl Content="{Binding Findings}" Focusable="False" Margin="0,14,0,0"
+                      Visibility="{Binding Findings, Converter={StaticResource VisibleWhenSet}}" />
+      <TextBlock Text="{Binding Note}" Style="{StaticResource BodyText}" Margin="0,14,0,0"
+                 Visibility="{Binding Note, Converter={StaticResource VisibleWhenSet}}" />
+      <ContentControl Content="{Binding Warning}" Focusable="False" Margin="0,14,0,0"
+                      Visibility="{Binding Warning, Converter={StaticResource VisibleWhenSet}}" />
+
+      <!-- A link or a button on the left, the main button on the right. -->
+      <DockPanel Margin="0,14,0,0" LastChildFill="False">
+        <Button DockPanel.Dock="Right" Style="{DynamicResource AccentButtonStyle}" Padding="14,5,14,6" MinWidth="72" Margin="8,0,0,0"
+                Content="{Binding Primary.Text}" Command="{Binding Primary.Command}"
+                Visibility="{Binding Primary, Converter={StaticResource VisibleWhenSet}}" />
+        <Button DockPanel.Dock="Right" Padding="14,5,14,6" MinWidth="72" Margin="8,0,0,0"
+                Content="{Binding Close.Text}" Command="{Binding Close.Command}"
+                Visibility="{Binding Close, Converter={StaticResource VisibleWhenSet}}" />
+        <TextBlock DockPanel.Dock="Left" Style="{StaticResource LinkText}"
+                   Visibility="{Binding Link, Converter={StaticResource VisibleWhenSet}}">
+          <Hyperlink Command="{Binding Link.Command}"><Run Text="{Binding Link.Text, Mode=OneWay}" /></Hyperlink>
+        </TextBlock>
+        <Button DockPanel.Dock="Left" Padding="14,5,14,6" MinWidth="72"
+                Content="{Binding Secondary.Text}" Command="{Binding Secondary.Command}"
+                Visibility="{Binding Secondary, Converter={StaticResource VisibleWhenSet}}" />
+      </DockPanel>
+    </StackPanel>
+  </Border>
+</Window>

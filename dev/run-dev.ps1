@@ -1,8 +1,10 @@
-# Windows counterpart of run-dev.sh: builds the core and runs, for development, the stub parrot
-# and the daemon (unprivileged, its state under $env:RIOT_DEV_DIR), until Ctrl-C. No tray app yet.
+# Windows counterpart of run-dev.sh: builds the core and RiotAgent.exe, then runs, for development,
+# the stub parrot, the daemon (unprivileged, its state under $env:RIOT_DEV_DIR) and the app (its
+# icon has an orange dot, its popup says "development"), until Ctrl-C.
 #   dev\run-dev.ps1           then, in another shell:
 #   $env:RIOT_SOCKET='\\.\pipe\riot-dev'; core\target\release\riotctl.exe status
-# RIOT_DEV_BUILD=0 runs the last build as it is.
+# RIOT_DEV_APP=0 runs without the app; RIOT_DEV_BUILD=0 runs the last build as it is; RIOT_DEBUG=1
+# logs the app's clipboard events (never content) to %LOCALAPPDATA%\Riot\agent-debug.log.
 # The gateway (127.0.0.1:7591) is also an HTTPS_PROXY here (RIOT_DEV_PROXY=0 turns it off); its
 # certificates chain to the stub's root, $env:RIOT_DEV_DIR\stub-root.pem: trust that one
 # (Import-Certificate -CertStoreLocation Cert:\CurrentUser\Root). See docs/network-interception.md.
@@ -26,16 +28,23 @@ function Get-DevVariable([string]$name, [string]$default) {
 $devDir = Get-DevVariable 'RIOT_DEV_DIR' (Join-Path $env:TEMP 'riot-dev')
 New-Item -ItemType Directory -Force $devDir | Out-Null
 $socket = Get-DevVariable 'RIOT_SOCKET' '\\.\pipe\riot-dev'
+$withApp = (Get-DevVariable 'RIOT_DEV_APP' '1') -eq '1'
+$app = Join-Path $root 'windows\RiotAgent\bin\Release\net10.0-windows\RiotAgent.exe'
 
 if ((Get-DevVariable 'RIOT_DEV_BUILD' '1') -eq '1') {
-  Write-Host 'building the core...'
-  # Cargo reports progress on stderr, which PowerShell 5.1 turns into errors once redirected.
+  # Both tools report progress on stderr, which PowerShell 5.1 turns into errors once redirected.
   $ErrorActionPreference = 'Continue'
+  Write-Host 'building the core...'
   cargo build --release --manifest-path (Join-Path $root 'core\Cargo.toml') -p riot-daemon 2>&1 | ForEach-Object { "$_" }
-  $ErrorActionPreference = 'Stop'
   if ($LASTEXITCODE -ne 0) { exit 1 }
-} elseif (-not (Test-Path (Join-Path $bin 'riot-daemon.exe'))) {
-  Write-Error 'no build in core\target\release: run without RIOT_DEV_BUILD=0 once'
+  if ($withApp) {
+    Write-Host 'building RiotAgent.exe...'
+    dotnet build (Join-Path $root 'windows\RiotAgent') -c Release --nologo -v quiet 2>&1 | ForEach-Object { "$_" }
+    if ($LASTEXITCODE -ne 0) { exit 1 }
+  }
+  $ErrorActionPreference = 'Stop'
+} elseif (-not (Test-Path (Join-Path $bin 'riot-daemon.exe')) -or ($withApp -and -not (Test-Path $app))) {
+  Write-Error 'no build in core\target\release or windows\RiotAgent\bin\Release: run without RIOT_DEV_BUILD=0 once'
 }
 
 function Test-Port([int]$port) {
@@ -75,6 +84,13 @@ try {
   if ($gatewayAddr) { Set-DevVariable 'RIOT_GATEWAY_ADDR' $gatewayAddr }
   $daemon = Start-Process -FilePath (Join-Path $bin 'riot-daemon.exe') -NoNewWindow -PassThru
   $processes += $daemon
+  if ($withApp) {
+    while (-not (Test-Path $socket)) {
+      if ($daemon.HasExited) { exit 1 }
+      Start-Sleep -Milliseconds 200
+    }
+    $processes += Start-Process -FilePath $app -PassThru
+  }
   Write-Host "daemon on $socket; Ctrl-C stops the run"
   $daemon.WaitForExit()
 } finally {

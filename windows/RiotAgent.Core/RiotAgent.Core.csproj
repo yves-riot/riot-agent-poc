@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The agent's logic, without UI or Win32: the daemon client, the clipboard guard, tokens,
+       strings. Tested by RiotAgent.Tests. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+</Project>

@@ -6,8 +6,8 @@ documents holding sensitive data are blocked from being opened by them. Installe
 entirely by MDM; the daemon is the base of Riot's future MDM agent.
 
 ```
-Riot.app (menu bar, SwiftUI)  ── clipboard guard + HUD + popup
-      │  Unix socket, line-delimited JSON (core/riot-ipc)
+Riot.app (menu bar, SwiftUI)  ── clipboard guard + HUD + popup   (Windows: RiotAgent.exe, WPF)
+      │  Unix socket, line-delimited JSON (core/riot-ipc)          (Windows: a named pipe)
 riot-daemon (Rust, root)      ── detection engine, policy, parrot sync, report outbox
       ▲  same socket (scanFile with deadline)
 RiotES.systemextension        ── Endpoint Security AUTH_OPEN on the protected apps' processes
@@ -34,6 +34,7 @@ Why Rust, QuickJS and native apps: [docs/stack-choices.md](docs/stack-choices.md
 | `apple/RiotES`                       | Endpoint Security system extension                                                                                                      |
 | `apple/RiotNE`                       | network system extension: transparent proxy handing protected apps' TLS flows to the daemon                                             |
 | `apple/build-app.sh`, `build-pkg.sh` | `Riot.app` and the MDM `.pkg`                                                                                                           |
+| `windows/`                           | `RiotAgent.exe` (C#, WPF): notification icon, popup, clipboard guard, HUD; its logic in `RiotAgent.Core`, tested by `RiotAgent.Tests`  |
 | `mdm/`                               | Iru audit script ([docs/deploy-iru.md](docs/deploy-iru.md)); the configuration profile is parrot's ([docs/parrot-agent-api.md](docs/parrot-agent-api.md#the-mdm-profile)) |
 | `dev/`                               | the stub parrot's policy (`stub-policy.json`, for `riot-stub-parrot`), dev settings, `run-dev.sh` (`run-dev.ps1` on Windows)          |
 
@@ -65,17 +66,23 @@ folder, CA, stub on 8787).
 talks to the daemon directly; `scan` works unprivileged because `run-dev.sh` sets
 `RIOT_DEV_ALLOW_SCAN=1`. Every command: [docs/riotctl.md](docs/riotctl.md).
 
-### On Windows (daemon only, so far)
+### On Windows
 
-Needs Rust (MSVC), Node + pnpm and the same extension checkout. No tray app yet:
+Needs Rust (MSVC), the .NET 10 SDK (or later, targeting .NET 10), Node + pnpm and the same
+extension checkout (`SONAR_PACKAGES_DIR`, default `%USERPROFILE%\dev\riot\riot-browser-extension\packages`):
 
 ```powershell
 cd js; pnpm install; node build.mjs; cd ..
-dev\run-dev.ps1     # builds the core, then runs the stub parrot and the daemon (unprivileged)
+dev\run-dev.ps1     # builds the core and RiotAgent.exe, then runs the stub parrot, the daemon
+                    # (unprivileged) and the app (an orange dot on its icon, "development" in its popup)
 $env:RIOT_SOCKET='\\.\pipe\riot-dev'; core\target\release\riotctl.exe status
 ```
 
-What differs from macOS is in `core/riot-daemon/src/os/`; the rest of the daemon is shared.
+`RIOT_DEV_APP=0` and `RIOT_DEV_BUILD=0` as on macOS. Where the `RiotAgent` service is installed,
+the run pauses it (one UAC prompt) and the dev gateway takes 7601. `RIOT_DEBUG=1` logs the app's
+clipboard events and timings, never content, to `%LOCALAPPDATA%\Riot\agent-debug.log`.
+
+What differs from macOS in the daemon is in `core/riot-daemon/src/os/`; the rest is shared.
 
 | macOS                                              | Windows                                                                                          |
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -90,7 +97,33 @@ What differs from macOS is in `core/riot-daemon/src/os/`; the rest of the daemon
 
 Registering the service by hand (an elevated shell, until the installer exists):
 `sc.exe create RiotAgent binPath= "<path>\riot-daemon.exe --service" start= auto`, then
-`sc.exe start RiotAgent`.
+`sc.exe start RiotAgent`. `RiotAgent.exe` started without `RIOT_SOCKET` talks to it.
+
+The app is the menu bar app's counterpart, on the same protocol, with the same guard rules and the
+same tests (`windows/RiotAgent.Core/ClipboardGuard.cs`). Why WPF:
+[docs/stack-choices.md](docs/stack-choices.md#windows-wpf). The cards and the popup are laid out in
+XAML (`App.xaml`, `Hud.xaml`, `TrayPopup.xaml`) over view records the C# fills with translated
+strings (`Views.cs`). `windows/RiotAgent.slnx` opens the three projects in Visual Studio 2022
+17.13 or later (".NET desktop development" workload, .NET 10 SDK).
+
+| macOS (`Riot.app`)                                         | Windows (`RiotAgent.exe`)                                                                                       |
+| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `changeCount` polled every 0.5 s                           | `AddClipboardFormatListener`: notified at once                                                                  |
+| Redacted text as a pasteboard promise                      | Delayed rendering: `SetClipboardData(CF_UNICODETEXT, NULL)`, then `WM_RENDERFORMAT` when an app reads it        |
+| nspasteboard.org markers for clipboard managers            | `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory` and `CanUploadToCloudClipboard` = 0: Win+V history and cloud sync skip it |
+| Frontmost app by bundle id                                 | Foreground window's executable name (`EVENT_SYSTEM_FOREGROUND`), case-insensitive                               |
+| ⌘ held at the read                                         | Ctrl held (`GetAsyncKeyState`)                                                                                  |
+| Time since the last key (coarse counter)                   | Raw keyboard input to a hidden window (`RIDEV_INPUTSINK`): the arrival time only, never which key              |
+| ⌘Z ⌘V, needs Accessibility                                 | Ctrl+Z Ctrl+V with `SendInput`, no permission; Windows drops them for an AI app running elevated                |
+| Non-activating `NSPanel`                                   | `WS_EX_NOACTIVATE` window                                                                                       |
+| Drag guard                                                 | none: intercepting a drag between two apps would mean injecting code into them                                  |
+
+Verified on Windows 11 against the installed service: a self-test (`RIOT_SELFTEST=<report>`) checks
+that a promise is rendered once, when another process reads it, that Windows keeps the rendered
+text, that our render is not a change of content, and that CF_TEXT readers get it converted; a
+stand-in `claude.exe` pasting with Ctrl+V got `[IBAN_1]`, the paste was reported, and the original
+was back on the clipboard once it closed. `RIOT_SNAPSHOT_DIR=<dir>` draws every HUD card and the
+popup to PNG files. Memory: 93 MB working set, 44 MB private, idle.
 
 ## Tests
 
@@ -98,6 +131,7 @@ Registering the service by hand (an elevated shell, until the installer exists):
 cd core && cargo test                      # incl. the extension's conformance corpus on QuickJS
 cargo run -p riot-detect --release --example bench    # latency / memory
 cd apple/RiotAgent && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+cd windows && dotnet test RiotAgent.slnx    # the clipboard guard's rules, tokens, CF_HTML, strings
 ```
 
 ## Results so far (MacBook Air M2, release builds)
@@ -264,11 +298,15 @@ redacts Claude Code's API requests (`ANTHROPIC_BASE_URL=http://127.0.0.1:7591/an
   shows the state (`NSPasteboard.accessBehavior`) and links to Settings.
 - **Product:** authorized services (account detection has no desktop equivalent), and whether to
   guard browsers too (today: the extension does).
-- **Windows** (phase 2): the daemon runs there as a service on a named pipe (above). Still to do:
-  tray app and clipboard guard in C# on the same protocol, how a protected app is identified
-  (executable, package, signer: `is_installed` answers `false` until then), minifilter for files,
-  the network hand-over (WFP), an MSI. The service mode is built but not yet run under the service
-  manager. Not there yet either: a peer check of the client's signature, and keys in the TPM.
+- **Windows** (phase 2): the daemon runs as a service on a named pipe, and `RiotAgent.exe` guards
+  the clipboard (above). Still to do:
+  - checking a protected app's signer (Authenticode), not only its executable's name, with the
+    file guard; `is_installed` answers `false` until apps are identified that way;
+  - the minifilter for files, the network hand-over (WFP), an MSI (service, app started at
+    sign-in, the .NET runtime);
+  - a peer check of the client's signature, and keys in the TPM;
+  - real ChatGPT and Claude Desktop pastes (tested with a stand-in `claude.exe` so far), and
+    whether they read the clipboard outside pastes.
 
 ## Deviations from the plan
 

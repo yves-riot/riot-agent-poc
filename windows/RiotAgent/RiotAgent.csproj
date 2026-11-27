@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- RiotAgent.exe: the notification icon, the clipboard guard and the HUD (WPF). -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <AssemblyName>RiotAgent</AssemblyName>
+    <RootNamespace>Riot.Agent.App</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Program.Main, not the one generated from App.xaml: one instance per session and daemon. -->
+    <StartupObject>Riot.Agent.App.Program</StartupObject>
+    <!-- The app allocates little: background GC only costs memory (measured 57 -> 49 MB private). -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <!-- The extension's checkout, for its strings (as apple/build-app.sh). -->
+    <SonarPackagesDir Condition="'$(SonarPackagesDir)' == ''">$(SONAR_PACKAGES_DIR)</SonarPackagesDir>
+    <SonarPackagesDir Condition="'$(SonarPackagesDir)' == ''">$(USERPROFILE)\dev\riot\riot-browser-extension\packages</SonarPackagesDir>
+    <LocalesDir>$(SonarPackagesDir)\sonar-ui\src\locales</LocalesDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\RiotAgent.Core\RiotAgent.Core.csproj" />
+    <None Include="$(LocalesDir)\en.json;$(LocalesDir)\fr.json" Link="locales\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="CheckLocales" BeforeTargets="Build">
+    <Error Condition="!Exists('$(LocalesDir)\en.json')" Text="No locale files in $(LocalesDir): set SONAR_PACKAGES_DIR to a checkout's packages folder (riot-browser-extension, branch feat/shared-sonar-packages)." />
+  </Target>
+</Project>
