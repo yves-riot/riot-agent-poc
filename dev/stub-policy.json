@@ -39,7 +39,7 @@
         },
         {
           "platform": "windows",
-          "bundle_id": "chatgpt.exe",
+          "bundle_id": "OpenAI.Codex_2p2nqsd0c76g0",
           "team_id": null,
           "executable_prefixes": []
         }
@@ -71,7 +71,7 @@
         },
         {
           "platform": "windows",
-          "bundle_id": "claude.exe",
+          "bundle_id": "Claude_pzs8sxrjxfjjc",
           "team_id": null,
           "executable_prefixes": []
         }

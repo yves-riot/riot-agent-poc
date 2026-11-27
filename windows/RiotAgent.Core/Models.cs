@@ -5,8 +5,9 @@ namespace Riot.Agent;
 
 public sealed record TypeCount(string Flag, string Label, int Count);
 
-/// <summary>A protected app. <c>BundleId</c> is the policy's app id: on Windows, the
-/// executable's file name (<c>claude.exe</c>), compared case-insensitively.</summary>
+/// <summary>A protected app. <c>BundleId</c> is the policy's app id: on Windows, the package
+/// family name (<c>Claude_pzs8sxrjxfjjc</c>), or the lower-case executable file name of an app
+/// that is not packaged.</summary>
 public sealed record TargetApp(string ServiceId, string DisplayName, string BundleId, bool Installed);
 
 public sealed record RecentEvent(string EventId, string At, string Kind, string AppName, IReadOnlyList<TypeCount> Types);

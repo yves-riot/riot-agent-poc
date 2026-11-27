@@ -61,6 +61,7 @@ file-id = { workspace = true }
 rustix = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["ApplicationModel", "Foundation_Collections", "Management_Deployment"] }
 windows-registry = { workspace = true }
 windows-service = { workspace = true }
 windows-sys = { workspace = true, features = [

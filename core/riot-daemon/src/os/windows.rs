@@ -5,8 +5,9 @@
 //! LocalSystem or an elevated administrator here.
 //!
 //! The daemon's only `unsafe` code is here (`#![deny(unsafe_code)]` elsewhere): the Win32 calls
-//! that no maintained crate wraps safely. The registry goes through
-//! `windows-registry` and file identity through `file-id`, which are safe to call.
+//! that no maintained crate wraps safely. The registry goes through `windows-registry`, file
+//! identity through `file-id` and installed packages through `windows` (WinRT), which are safe
+//! to call.
 
 #![allow(unsafe_code)]
 
@@ -202,10 +203,21 @@ pub fn os_version() -> String {
     parts.into_iter().map_while(|p| p).collect::<Vec<_>>().join(".")
 }
 
-/// Not known on Windows yet: how a protected app is identified there (executable, package
-/// family, signer) is decided with the clipboard guard.
-pub fn is_installed(_app_id: &str) -> bool {
-    false
+/// A protected app is known by its package family name (`Claude_pzs8sxrjxfjjc`): Claude and
+/// ChatGPT are MSIX packages, and the name ends with a hash of the publisher, so it also says who
+/// signed the app. Installed for any user (the service runs as LocalSystem), or for the current
+/// user where that is not allowed (development). An app that is not packaged is known by its
+/// executable's name, which says nothing about installation: false.
+pub fn is_installed(app_id: &str) -> bool {
+    use windows::Management::Deployment::PackageManager;
+    use windows::core::HSTRING;
+
+    let Ok(manager) = PackageManager::new() else { return false };
+    let family = HSTRING::from(app_id);
+    let all_users = manager.FindPackagesByPackageFamilyName(&family).and_then(|p| p.First()).and_then(|it| it.HasCurrent());
+    all_users
+        .or_else(|_| manager.FindPackagesByUserSecurityIdPackageFamilyName(&HSTRING::new(), &family).and_then(|p| p.First()).and_then(|it| it.HasCurrent()))
+        .unwrap_or(false)
 }
 
 // ---------- registry ----------
@@ -433,6 +445,19 @@ fn ok(status: WIN32_ERROR) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_packages_and_executable_names_are_not_installed() {
+        assert!(!is_installed("Riot.NoSuchPackage_0000000000000"));
+        assert!(!is_installed("claude.exe"));
+    }
+
+    /// On a PC with Claude Desktop: `cargo test -p riot-daemon -- --ignored`.
+    #[test]
+    #[ignore = "needs Claude Desktop installed"]
+    fn claude_desktop_is_found_by_its_package_family() {
+        assert!(is_installed("Claude_pzs8sxrjxfjjc"));
+    }
 
     #[test]
     fn the_smbios_system_structure_gives_the_uuid_and_serial() {

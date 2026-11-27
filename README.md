@@ -93,7 +93,13 @@ What differs from macOS in the daemon is in `core/riot-daemon/src/os/`; the rest
 | `/Library/Application Support/com.tryriot.agent`   | `%ProgramData%\Riot`, its own DACL (SYSTEM, Administrators); refused if another user owns it     |
 | `0600` key files                                   | DACL: SYSTEM and the daemon's user only                                                          |
 | `IOPlatformUUID`, serial                           | SMBIOS system UUID and serial (same values as `Win32_ComputerSystemProduct`)                     |
-| `desktop_apps` with `platform: macos`              | `platform: windows`; `bundle_id` is provisionally the executable's name (`claude.exe`)           |
+| `desktop_apps` with `platform: macos`              | `platform: windows`; `bundle_id` is the package family name (`Claude_pzs8sxrjxfjjc`), see below |
+
+A protected app is known by its package family name: Claude Desktop is `Claude_pzs8sxrjxfjjc`,
+ChatGPT `OpenAI.Codex_2p2nqsd0c76g0` (the package it shares with Codex, as on macOS). The name ends
+with a hash of the publisher, so another program cannot pass for the app (Claude Code's binary is
+also called `claude.exe`). The daemon finds installed packages with `PackageManager`. An app that
+is not packaged is known by its executable's name.
 
 Registering the service by hand (an elevated shell, until the installer exists):
 `sc.exe create RiotAgent binPath= "<path>\riot-daemon.exe --service" start= auto`, then
@@ -111,9 +117,9 @@ strings (`Views.cs`). `windows/RiotAgent.slnx` opens the three projects in Visua
 | `changeCount` polled every 0.5 s                           | `AddClipboardFormatListener`: notified at once                                                                  |
 | Redacted text as a pasteboard promise                      | Delayed rendering: `SetClipboardData(CF_UNICODETEXT, NULL)`, then `WM_RENDERFORMAT` when an app reads it        |
 | nspasteboard.org markers for clipboard managers            | `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory` and `CanUploadToCloudClipboard` = 0: Win+V history and cloud sync skip it |
-| Frontmost app by bundle id                                 | Foreground window's executable name (`EVENT_SYSTEM_FOREGROUND`), case-insensitive                               |
+| Frontmost app by bundle id                                 | Foreground window's package family name (`EVENT_SYSTEM_FOREGROUND`), else its executable's name          |
 | ⌘ held at the read                                         | Ctrl held (`GetAsyncKeyState`)                                                                                  |
-| Time since the last key (coarse counter)                   | Raw keyboard input to a hidden window (`RIDEV_INPUTSINK`): the arrival time only, never which key              |
+| Time since the last key (coarse counter)                   | Raw keyboard input to a hidden window (`RIDEV_INPUTSINK`), only while a paste's card is open: the arrival time only, never which key |
 | ⌘Z ⌘V, needs Accessibility                                 | Ctrl+Z Ctrl+V with `SendInput`, no permission; Windows drops them for an AI app running elevated                |
 | Non-activating `NSPanel`                                   | `WS_EX_NOACTIVATE` window                                                                                       |
 | Drag guard                                                 | none: intercepting a drag between two apps would mean injecting code into them                                  |
@@ -122,8 +128,12 @@ Verified on Windows 11 against the installed service: a self-test (`RIOT_SELFTES
 that a promise is rendered once, when another process reads it, that Windows keeps the rendered
 text, that our render is not a change of content, and that CF_TEXT readers get it converted; a
 stand-in `claude.exe` pasting with Ctrl+V got `[IBAN_1]`, the paste was reported, and the original
-was back on the clipboard once it closed. `RIOT_SNAPSHOT_DIR=<dir>` draws every HUD card and the
-popup to PNG files. Memory: 93 MB working set, 44 MB private, idle.
+was back on the clipboard once it closed. Then in Claude Desktop and ChatGPT (both MSIX): each
+paste was redacted and reported, and "paste without redaction" undid it and pasted the original.
+Neither app reads the clipboard before Ctrl+V. Claude reads it without a window
+(`OpenClipboard(NULL)`), so Windows cannot say who reads, and the guard keeps its timing rules.
+`RIOT_SNAPSHOT_DIR=<dir>` draws every HUD card and the popup to PNG files. Memory: 93 MB working
+set, 44 MB private, idle.
 
 ## Tests
 
@@ -300,13 +310,11 @@ redacts Claude Code's API requests (`ANTHROPIC_BASE_URL=http://127.0.0.1:7591/an
   guard browsers too (today: the extension does).
 - **Windows** (phase 2): the daemon runs as a service on a named pipe, and `RiotAgent.exe` guards
   the clipboard (above). Still to do:
-  - checking a protected app's signer (Authenticode), not only its executable's name, with the
-    file guard; `is_installed` answers `false` until apps are identified that way;
+  - the signer (Authenticode) of a protected app that is not packaged: it is known by its
+    executable's name only, and `is_installed` cannot tell;
   - the minifilter for files, the network hand-over (WFP), an MSI (service, app started at
     sign-in, the .NET runtime);
   - a peer check of the client's signature, and keys in the TPM;
-  - real ChatGPT and Claude Desktop pastes (tested with a stand-in `claude.exe` so far), and
-    whether they read the clipboard outside pastes.
 
 ## Deviations from the plan
 

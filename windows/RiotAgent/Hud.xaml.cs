@@ -34,6 +34,8 @@ internal sealed partial class Hud
     }
 
     public Card? Current { get; private set; }
+    /// <summary>A card was shown, or the HUD closed (null).</summary>
+    public event Action<Card?>? CardChanged;
 
     protected override void OnSourceInitialized(EventArgs e)
     {
@@ -59,12 +61,14 @@ internal sealed partial class Hud
         dismissTimer?.Stop();
         Current = null;
         Hide();
+        CardChanged?.Invoke(null);
     }
 
     public void Show(Card card, TimeSpan? autoDismiss)
     {
         Current = card;
         DataContext = View(card);
+        CardChanged?.Invoke(card);
         if (!IsVisible) Show();
         Place();
         dismissTimer?.Stop();

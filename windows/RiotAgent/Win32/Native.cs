@@ -111,6 +111,11 @@ internal static class Native
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, [Out] char[] name, ref uint size);
 
+    /// <summary>ERROR_SUCCESS, or APPMODEL_ERROR_NO_PACKAGE (15700) for a process that is not
+    /// packaged.</summary>
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetPackageFamilyName(IntPtr process, ref uint length, [Out] char[] name);
+
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool CloseHandle(IntPtr handle);
@@ -131,6 +136,7 @@ internal static class Native
         public IntPtr Target;
     }
 
+    public const uint RIDEV_REMOVE = 0x00000001;
     public const uint RIDEV_INPUTSINK = 0x00000100;
 
     [DllImport("user32.dll", SetLastError = true)]

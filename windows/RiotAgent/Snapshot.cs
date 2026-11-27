@@ -22,9 +22,9 @@ internal static class Snapshot
             new("phone", "redaction.flag.phone", 1), new("person_name", "redaction.flag.person_name", 1), new("api_key", "redaction.flag.api_key", 1),
         ];
         var result = new RedactTextResult("redacted", "[IBAN_1]", types, "ev", true);
-        var file = new FileBlocked("ev", "Relevé bancaire.pdf", "claude.exe", "Claude", types.Take(2).ToList(), true);
+        var file = new FileBlocked("ev", "Relevé bancaire.pdf", "Claude_pzs8sxrjxfjjc", "Claude", types.Take(2).ToList(), true);
         model.Preview(new PopupState(new PopupView("signedIn", "Camille Martin", 12), "Albert", null, "Acme", null, true,
-            [new("anthropic", "Claude", "claude.exe", true), new("openai", "ChatGPT", "chatgpt.exe", false)],
+            [new("anthropic", "Claude", "Claude_pzs8sxrjxfjjc", true), new("openai", "ChatGPT", "OpenAI.Codex_2p2nqsd0c76g0", false)],
             [new("1", "", "textRedacted", "Claude", types.Take(2).ToList()), new("2", "", "fileBlocked", "ChatGPT", types.Take(1).ToList())]));
 
         Hud.Card[] cards =

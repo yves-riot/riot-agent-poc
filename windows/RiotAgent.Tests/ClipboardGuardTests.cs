@@ -138,8 +138,8 @@ internal sealed class FakeBackend : IGuardBackend
 
 public sealed class ClipboardGuardTests
 {
-    private const string ChatGpt = "chatgpt.exe";
-    private const string Claude = "claude.exe";
+    private const string ChatGpt = "OpenAI.Codex_2p2nqsd0c76g0";
+    private const string Claude = "Claude_pzs8sxrjxfjjc";
     private const string Own = "riotagent.exe";
     private readonly FakeClipboard pb = new();
     private readonly FakeBackend backend = new();
@@ -493,7 +493,7 @@ public sealed class ClipboardGuardTests
     [Fact]
     public void AppIdsAreCaseInsensitive() => SingleThread.Run(async () =>
     {
-        await CopyIbanAndActivate("Claude.EXE");
+        await CopyIbanAndActivate(Claude.ToUpperInvariant());
         Assert.True(pb.IsPromised);
     });
 }

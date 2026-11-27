@@ -2,8 +2,10 @@ using static Riot.Agent.App.Win32.Native;
 
 namespace Riot.Agent.App.Win32;
 
-/// <summary>Which app is in the foreground, by executable file name (<c>claude.exe</c>), from
-/// <c>EVENT_SYSTEM_FOREGROUND</c>: the counterpart of NSWorkspace's activation notifications.</summary>
+/// <summary>Which app is in the foreground, from <c>EVENT_SYSTEM_FOREGROUND</c>: the counterpart
+/// of NSWorkspace's activation notifications. An app is known by its package family name
+/// (<c>Claude_pzs8sxrjxfjjc</c>), which ends with a hash of its publisher, so another program
+/// cannot pass for it; an app that is not packaged, by its executable's file name.</summary>
 internal sealed class Foreground : IDisposable
 {
     private readonly WinEventProc callback; // kept alive: Windows calls it
@@ -24,16 +26,20 @@ internal sealed class Foreground : IDisposable
     {
         if (hwnd == IntPtr.Zero) return null;
         GetWindowThreadProcessId(hwnd, out var pid);
-        return pid == 0 ? null : ExecutableName(pid);
+        return pid == 0 ? null : ProcessAppId(pid);
     }
 
-    /// <summary>Lower-case file name of the process's executable; null if it cannot be opened.</summary>
-    public static string? ExecutableName(uint pid)
+    /// <summary>The process's package family name, else the lower-case file name of its
+    /// executable; null if it cannot be opened.</summary>
+    public static string? ProcessAppId(uint pid)
     {
         var process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
         if (process == IntPtr.Zero) return null;
         try
         {
+            var family = new char[256]; // PACKAGE_FAMILY_NAME_MAX_LENGTH + 1 fits
+            var length = (uint)family.Length;
+            if (GetPackageFamilyName(process, ref length, family) == 0 && length > 0) return new string(family, 0, (int)length - 1);
             var path = new char[1024];
             var size = (uint)path.Length;
             return QueryFullProcessImageNameW(process, 0, path, ref size)
@@ -50,21 +56,40 @@ internal sealed class Foreground : IDisposable
 }
 
 /// <summary>Ctrl's state now, and when a key was last pressed anywhere. The time comes from raw
-/// keyboard input delivered to our hidden window (<c>RIDEV_INPUTSINK</c>); only the arrival time
-/// is kept, never which key: the guard needs to know whether the user typed since a paste.</summary>
+/// keyboard input delivered to our hidden window (<c>RIDEV_INPUTSINK</c>), only while
+/// <see cref="Listening"/>: from a paste, as long as its card is open, the one time the guard
+/// needs to know whether the user typed since. Only the arrival time is kept, never which key.</summary>
 internal sealed class KeyboardState : IKeyboardState
 {
+    private readonly MessageWindow window;
     private long lastKeyTicks = Environment.TickCount64 - 3_600_000;
+    private bool listening;
 
     public KeyboardState(MessageWindow window)
     {
-        var keyboard = new RAWINPUTDEVICE { UsagePage = 0x01, Usage = 0x06, Flags = RIDEV_INPUTSINK, Target = window.Handle };
-        RegisterRawInputDevices([keyboard], 1, (uint)System.Runtime.InteropServices.Marshal.SizeOf<RAWINPUTDEVICE>());
+        this.window = window;
         window.AddHook((IntPtr _, int msg, IntPtr _, IntPtr _, ref bool _) =>
         {
             if (msg == WM_INPUT) lastKeyTicks = Environment.TickCount64; // DefWindowProc frees the input
             return IntPtr.Zero;
         });
+    }
+
+    public bool Listening
+    {
+        get => listening;
+        set
+        {
+            if (value == listening) return;
+            // Removing takes no target window.
+            var keyboard = new RAWINPUTDEVICE
+            {
+                UsagePage = 0x01, Usage = 0x06,
+                Flags = value ? RIDEV_INPUTSINK : RIDEV_REMOVE,
+                Target = value ? window.Handle : IntPtr.Zero,
+            };
+            if (RegisterRawInputDevices([keyboard], 1, (uint)System.Runtime.InteropServices.Marshal.SizeOf<RAWINPUTDEVICE>())) listening = value;
+        }
     }
 
     public bool ShortcutKeyHeld => (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;

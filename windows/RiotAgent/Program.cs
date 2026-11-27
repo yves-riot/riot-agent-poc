@@ -41,10 +41,13 @@ internal static class Program
         var keyboard = new KeyboardState(window);
         var foreground = new Foreground();
         var tray = new TrayIcon(window);
-        var ownApp = Path.GetFileName(Environment.ProcessPath)?.ToLowerInvariant();
+        var ownApp = Foreground.ProcessAppId((uint)Environment.ProcessId);
         var development = !IsInstalledCopy();
 
         var model = new AppModel(backend => new ClipboardGuard(clipboard, backend, keyboard, new Keystrokes()) { OwnAppId = ownApp, Log = log }, development);
+        // Keys are timed only while "paste without redaction" may be clicked: it must not undo
+        // what the user typed after the paste.
+        model.Hud.CardChanged += card => keyboard.Listening = card is Hud.Card.Text or Hud.Card.TextConfirm;
         var popup = new TrayPopup(model);
         clipboard.Changed += model.Clipboard.ClipboardChanged;
         foreground.Changed += model.Clipboard.Activated;
